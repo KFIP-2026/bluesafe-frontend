@@ -1,0 +1,653 @@
+import { useState } from 'react'
+import './App.css'
+import reputationMascot from './assets/reputation-mascot.png'
+
+type ScreenId =
+  | 't01' | 't02' | 't03' | 't04' | 't05' | 't06' | 't07' | 't08' | 't09' | 't10'
+  | 't11' | 't12' | 't13' | 't14' | 't15' | 't16' | 't17' | 't18' | 't19' | 't20'
+  | 'l01' | 'l02' | 'l03' | 'l04' | 'l05' | 'l06' | 'l07' | 'l08' | 'l09' | 'l10'
+  | 'l11' | 'l12'
+
+type ScreenDef = {
+  id: ScreenId
+  label: string
+  group: '임차인' | '임대인'
+  tab?: 'tenant' | 'landlord'
+  component: React.ComponentType<NavProps>
+}
+
+type NavProps = {
+  next: () => void
+  go: (id: ScreenId) => void
+}
+
+const deposit = 15_000_000
+const rent = 680_000
+const maintenance = 70_000
+
+const tenantScreens: ScreenDef[] = [
+  { id: 't01', label: '시작', group: '임차인', component: T01Entry },
+  { id: 't02', label: '온보딩', group: '임차인', component: T02Onboarding },
+  { id: 't03', label: '토스 인증', group: '임차인', component: T03Auth },
+  { id: 't04', label: 'ARC KYC', group: '임차인', component: T04Kyc },
+  { id: 't05', label: '임대인 초대', group: '임차인', component: T05Invite },
+  { id: 't06', label: '3자 계약서', group: '임차인', component: T06Contract },
+  { id: 't07', label: '보증금 송금', group: '임차인', component: T07Pay },
+  { id: 't08', label: '영수증', group: '임차인', component: T08Receipt },
+  { id: 't09', label: '홈', group: '임차인', tab: 'tenant', component: T09Home },
+  { id: 't10', label: '자동 반환', group: '임차인', component: T10Countdown },
+  { id: 't11', label: '안전 리포트', group: '임차인', component: T11Report },
+  { id: 't12', label: '평판', group: '임차인', component: T12Reputation },
+  { id: 't13', label: '공과금', group: '임차인', tab: 'tenant', component: T13Bills },
+  { id: 't14', label: '이의제기', group: '임차인', component: T14Dispute },
+  { id: 't15', label: '분쟁 진행', group: '임차인', component: T15DisputeStatus },
+  { id: 't16', label: '분쟁 결과', group: '임차인', component: T16DisputeResult },
+  { id: 't17', label: '퇴실 체크', group: '임차인', component: T17Moveout },
+  { id: 't18', label: '반환 완료', group: '임차인', component: T18Returned },
+  { id: 't19', label: '본국 송금', group: '임차인', component: T19Fx },
+  { id: 't20', label: '활동 내역', group: '임차인', tab: 'tenant', component: T20Activity },
+]
+
+const landlordScreens: ScreenDef[] = [
+  { id: 'l01', label: '초대', group: '임대인', component: L01Invited },
+  { id: 'l02', label: '임대인 인증', group: '임대인', component: L02Verify },
+  { id: 'l03', label: '매물 정보', group: '임대인', component: L03Property },
+  { id: 'l04', label: '계약 확인', group: '임대인', component: L04Review },
+  { id: 'l05', label: '계약 완료', group: '임대인', component: L05Signed },
+  { id: 'l06', label: '임대인 홈', group: '임대인', tab: 'landlord', component: L06Home },
+  { id: 'l07', label: '매물 상세', group: '임대인', component: L07Detail },
+  { id: 'l08', label: '미납 자동 차감', group: '임대인', component: L08LateRent },
+  { id: 'l09', label: '분쟁 수신', group: '임대인', component: L09IncomingDispute },
+  { id: 'l10', label: '수익 리포트', group: '임대인', tab: 'landlord', component: L10Earnings },
+  { id: 'l11', label: '보증금 정산', group: '임대인', component: L11DepositRelease },
+  { id: 'l12', label: '거래 내역', group: '임대인', tab: 'landlord', component: L12Activity },
+]
+
+const allScreens = [...tenantScreens, ...landlordScreens]
+
+function App() {
+  const [screenId, setScreenId] = useState<ScreenId>('t01')
+  const currentIndex = allScreens.findIndex((screen) => screen.id === screenId)
+  const current = allScreens[currentIndex]
+  const CurrentScreen = current.component
+  const showTopBar = screenId !== 't01' && !isChromeLessScreen(screenId)
+
+  const go = (id: ScreenId) => setScreenId(id)
+  const next = () => setScreenId(allScreens[Math.min(currentIndex + 1, allScreens.length - 1)].id)
+  const back = () => setScreenId(allScreens[Math.max(currentIndex - 1, 0)].id)
+
+  return (
+    <main className="app-shell">
+      <section className="phone">
+        <StatusBar light={screenId === 't01'} />
+        <div className={screenId === 't01' ? 'viewport is-entry' : 'viewport'}>
+          {showTopBar && <TopBar title={current.label} onBack={back} />}
+          <CurrentScreen key={screenId} next={next} go={go} />
+        </div>
+        {current.tab === 'tenant' && <TenantNav active={screenId} go={go} />}
+        {current.tab === 'landlord' && <LandlordNav active={screenId} go={go} />}
+        <HomeIndicator light={screenId === 't01'} />
+      </section>
+    </main>
+  )
+}
+
+function T01Entry({ next }: NavProps) {
+  return (
+    <div className="entry">
+      <img src={reputationMascot} alt="" className="entry-watermark" />
+      <div className="entry-copy">
+        <h1>보증금 걱정<br />더이상 하지마세요</h1>
+        <p>블루세이프가 지켜드릴게요.<br />토스 인증으로 30초만에 시작해요.</p>
+      </div>
+      <div className="entry-keywords" aria-label="BlueSafe 핵심 기능">
+        <span>멀티시그</span>
+        <span>자동반환</span>
+        <span>국제송금</span>
+      </div>
+      <div className="entry-bottom"><button className="white-cta" onClick={next}>시작하기</button><span>토스 인증으로 30초 만에 가입</span></div>
+    </div>
+  )
+}
+
+function T02Onboarding({ next }: NavProps) {
+  const [slide, setSlide] = useState(0)
+  const slides = [
+    {
+      eyebrow: '01 · LOCKUP',
+      title: '보증금이\n에스크로에 잠겨요',
+      desc: '계약 기간 동안 임대인도, 임차인도\n중간에 꺼낼 수 없어요.',
+      visual: <VaultDiagram />,
+    },
+    {
+      eyebrow: '02 · RETURN',
+      title: '퇴실 후\n자동으로 돌아와요',
+      desc: '집주인이 응답하지 않아도\n7일 뒤 보증금이 자동 반환돼요.',
+      visual: <ExamplePanel kind="return" />,
+    },
+    {
+      eyebrow: '03 · BILLS',
+      title: '공과금을\n자동으로 비교해요',
+      desc: '평년보다 높은 청구는\n근거와 함께 이의제기할 수 있어요.',
+      visual: <ExamplePanel kind="bills" />,
+    },
+    {
+      eyebrow: '04 · PROOF',
+      title: '모든 기록은\n직접 확인할 수 있어요',
+      desc: '보증금 락업과 반환 기록은\nXRPL Explorer에서 확인돼요.',
+      visual: <ExamplePanel kind="proof" />,
+    },
+  ]
+  const current = slides[slide]
+  const isLast = slide === slides.length - 1
+
+  return (
+    <Page>
+      <div className="skip-row"><button>건너뛰기</button></div>
+      <Hero title={current.title} desc={current.desc} />
+      {current.visual}
+      <Dots active={slide} count={slides.length} />
+      <BottomCTA label={isLast ? '토스로 인증하기' : '다음'} onClick={() => isLast ? next() : setSlide(slide + 1)} />
+    </Page>
+  )
+}
+
+function T03Auth({ next }: NavProps) {
+  return (
+    <Page>
+      <Hero title={'토스로\n간편하게 인증하기'} desc="본인 확인을 위해 한 번만 거치면 돼요" />
+      <Card tone="soft"><div className="auth-row"><IconBox><ShieldIcon /></IconBox><div><strong>안전한 본인확인</strong><span>주민등록·외국인등록 정보를 사용해요</span></div></div></Card>
+      <SectionTitle>BlueSafe가 받아오는 정보</SectionTitle>
+      <ListItem icon={<CheckIcon />} title="이름·생년월일" desc="계약서 자동 채우기에 사용" />
+      <ListItem icon={<CheckIcon />} title="외국인등록번호" desc="KYC 1단계 통과" />
+      <ListItem icon={<CheckIcon />} title="본인 명의 계좌" desc="보증금 입출금 검증" />
+      <p className="notice">토스 약관에 따라 안전하게 처리돼요. BlueSafe 서버에는 암호화돼서 보관돼요.</p>
+      <BottomCTA label="토스로 인증하기" secondary="약관 전체 보기" onClick={next} />
+    </Page>
+  )
+}
+
+function T04Kyc({ next }: NavProps) {
+  return (
+    <Page>
+      <StepperHeader current={1} />
+      <Hero title={'외국인 등록증을\n업로드해요'} />
+      <div className="camera-card"><div>여기에 카드를 맞춰요</div></div>
+      <SectionTitle>확인 항목</SectionTitle>
+      <Checklist items={['카드 전체가 프레임에 들어왔는지', '글자가 흐릿하지 않은지', '뒷면 칩이 보이지 않는지 (선택)']} />
+      <BottomCTA label="촬영하기" onClick={next} />
+    </Page>
+  )
+}
+
+function T05Invite({ next }: NavProps) {
+  return (
+    <Page>
+      <Hero title={'집주인을\n초대해요'} desc="카카오·문자 어디로든 보낼 수 있어요" />
+      <Card tone="soft"><div className="copy-link"><span>초대 링크</span><strong>bluesafe.app/r/8KQ-91D-LM2</strong><button>복사</button></div><div className="share-row"><button>카카오톡</button><button>문자</button></div></Card>
+      <SectionTitle>집주인이 할 일</SectionTitle>
+      <ListItem icon="1" title="링크 클릭 → 토스 인증" desc="같은 BlueSafe 미니앱이 열려요" />
+      <ListItem icon="2" title="계약서 확인 + 서명" desc="평균 4분" />
+      <ListItem icon="3" title="보증금 받기 계좌 등록" desc="본인 명의만 가능" />
+      <BottomCTA label="카카오톡으로 보내기" secondary="나중에" onClick={next} />
+    </Page>
+  )
+}
+
+function T06Contract({ next }: NavProps) {
+  return (
+    <Page>
+      <Hero eyebrow="검토 중" title="3자 안심 계약서" desc="집주인·BlueSafe·임차인 모두가 서명해요" />
+      <Card tone="soft">
+        <p className="doc-label">BLUESAFE TRUST LEASE · v1</p>
+        <Info label="주소" value="서울시 마포구 망원동 12-3, 302호" />
+        <Info label="계약 기간" value="2026.06.01 — 2027.05.31" />
+        <Info label="월세" value={krw(rent)} />
+        <Info label="보증금" value={krw(deposit)} strong />
+        <Info label="관리비" value="월 70,000원 (수도·인터넷 포함)" />
+      </Card>
+      <SectionTitle>안심 조항 3가지</SectionTitle>
+      <ListItem icon="§1" title="보증금은 XRPL 에스크로에 잠겨요" desc="계약 기간엔 양쪽 모두 못 꺼내요" />
+      <ListItem icon="§2" title="퇴실 후 7일 이내 자동 반환돼요" desc="집주인 응답이 없어도 풀려요" />
+      <ListItem icon="§3" title="분쟁 시 BlueSafe 패널이 판정해요" desc="평균 처리 4.2일" />
+      <label className="agree-row"><input type="checkbox" defaultChecked /> 전체 약관에 동의해요</label>
+      <BottomCTA label="서명하고 계속" onClick={next} />
+    </Page>
+  )
+}
+
+function T07Pay({ next }: NavProps) {
+  return (
+    <Page>
+      <Hero eyebrow="XRPL" title="안전 송금 금액" />
+      <div className="amount-panel"><strong>15,000,000원</strong><Info label="XRPL Escrow 시세" value="1 XRP ≈ 850원" /><Info label="잠금 수량" value="17,647 XRP" /><Info label="수수료" value="0원 (BlueSafe 부담)" /></div>
+      <SectionTitle>결제 수단</SectionTitle>
+      <ListItem icon={<WalletIcon />} title="토스뱅크 입출금" desc="••• 8821" action="기본" />
+      <ListItem icon={<PlusIcon />} title="다른 계좌 추가" />
+      <BottomCTA label="15,000,000원 안전 송금" onClick={next} />
+    </Page>
+  )
+}
+
+function T08Receipt({ next }: NavProps) {
+  return (
+    <Page>
+      <Hero title="보증금이 잠겼어요" desc="2027년 5월 31일까지 안전하게 보관돼요" />
+      <Card>
+        <Info label="안전 송금 금액" value={krw(deposit)} strong />
+        <Info label="계약 기간" value="2026.06.01–2027.05.31" />
+        <Info label="집" value="망원동 12-3, 302호" />
+        <Info label="집주인" value="김 ○ ○" />
+        <Info label="XRPL TX" value="F2A8…91D3" mono />
+      </Card>
+      <Card tone="blue"><strong>온체인 영수증</strong><span>익스플로러로 보기 →</span></Card>
+      <BottomCTA label="홈으로" secondary="공유" onClick={next} />
+    </Page>
+  )
+}
+
+function T09Home({ go }: NavProps) {
+  return (
+    <Page bottomNav>
+      <div className="home-head"><span>BlueSafe</span></div>
+      <div className="home-summary">
+        <div className="deposit-card">
+          <span>현재 보증금</span>
+          <strong>{won(deposit)}</strong>
+          <p>멀티시그로 안전하게 보관해요</p>
+        </div>
+        <div className="contract-card">
+          <div className="progress-ring" aria-label="계약 만료까지 282일 남음">
+            <strong>282</strong>
+            <span>일 남음</span>
+          </div>
+          <p>계약 만료까지</p>
+        </div>
+        <div className="living-card">
+          <span>거주</span>
+          <strong>83일차</strong>
+        </div>
+        <div className="quick-grid"><button>리포트</button><button onClick={() => go('t13')}>공과금</button><button onClick={() => go('t14')}>이의제기</button><button>계약서</button></div>
+      </div>
+      <div className="home-tasks">
+        <SectionTitle right="전체">오늘 할 일</SectionTitle>
+        <ListItem icon={<AlertIcon />} title="8월 가스비가 평소보다 12% 높아요" desc="이의제기 가능" onClick={() => go('t13')} />
+        <ListItem icon={<img src={reputationMascot} alt="" className="mini-asset" />} title="평판 기록이 시작됐어요" desc="한 방울 → 시내, 거주 60일 달성" />
+      </div>
+      <div className="screen-fill" />
+    </Page>
+  )
+}
+
+function T10Countdown() {
+  return (
+    <Page>
+      <Hero title="자동 반환까지" desc="집주인이 응답하지 않아도 자동으로 풀려요" />
+      <div className="time-grid"><TimeBox value="06" label="일" /><TimeBox value="14" label="시간" /><TimeBox value="32" label="분" /></div>
+      <div className="return-progress">
+        <div className="return-progress-head"><span>반환 진행률</span><strong>72%</strong></div>
+        <div className="return-track"><span /><b className="safe-emoji" aria-label="돈">💰</b></div>
+      </div>
+      <Card tone="blue"><strong>아무것도 안 해도 돼요</strong><span>이 시간이 지나면 보증금 15,000,000원이 자동으로 토스 계좌로 들어와요.</span></Card>
+      <SectionTitle>진행 상황</SectionTitle>
+      <Timeline items={['퇴실 체크리스트 완료|2027.05.31 14:02', '집주인 확인 요청 발송|2027.05.31 14:03', '집주인 응답 대기|7일 안에 응답 없으면 자동 반환', '보증금 반환|2027.06.07 (예상)']} />
+    </Page>
+  )
+}
+
+function T11Report() {
+  return (
+    <Page>
+      <Hero title="8월 안전 리포트" desc="2026.08 · BlueSafe Trust" />
+      <div className="report-summary">
+        <div className="score-card"><span>안전 점수</span><strong>97</strong><p>/ 100</p></div>
+        <div className="score-delta"><span>지난달보다</span><strong>+3 ↑</strong><p>좋아졌어요</p></div>
+      </div>
+      <SectionTitle>항목별 점수</SectionTitle>
+      <InfoList rows={[['월세 정시 납부', '6/6'], ['공과금 적정성', '평균 대비 +12%'], ['집주인 응답성', '평균 4시간'], ['문서 보관', '모두 완료']]} />
+    </Page>
+  )
+}
+
+function T12Reputation({ next }: NavProps) {
+  return (
+    <Page>
+      <Hero title="평판이 차올라요" desc="꾸준히 살수록 차올라요. 다음 집에서 써먹을 수 있어요." />
+      <div className="reputation-card"><img src={reputationMascot} alt="" className="reputation-mascot" /><small>SPRING</small><strong>지금은 샘</strong><span>97점 · 다음 바다까지 +2</span></div>
+      <SectionTitle>차오르는 단계</SectionTitle>
+      <InfoList rows={[['바다 Ocean', '99–100'], ['샘 Spring 지금', '80–98'], ['시내 Stream', '60–79'], ['한 방울 Drop', '36.5–59'], ['이슬 Dewdrop', '20–36.4'], ['마르는 Drying', '5–19'], ['갈라진 Cracked', '0–4']]} />
+      <BottomCTA label="집 구하기 (오픈하우스)" secondary="공유" onClick={next} />
+    </Page>
+  )
+}
+
+function T13Bills({ go }: NavProps) {
+  return (
+    <Page bottomNav>
+      <Hero title="8월 공과금" desc="평년 데이터와 자동으로 비교해요" />
+      <div className="total-bill"><span>청구 총액</span><strong>{krw(127_400)}</strong><p>평소 대비 +14,200원 (12.5%↑)</p></div>
+      <SectionTitle>항목별</SectionTitle>
+      <Bill title="전기" value={48_200} diff="+3.1%" />
+      <Bill title="가스" value={31_000} diff="+12.5%" warn />
+      <Bill title="수도" value={18_200} diff="−2.0%" />
+      <Bill title="인터넷" value={30_000} diff="0%" />
+      <Card tone="yellow"><strong>가스비가 평소보다 12% 높아요</strong><span>근거 자료를 첨부해 이의제기 할 수 있어요.</span></Card>
+      <BottomCTA label="이의 제기하기" secondary="나중에" onClick={() => go('t14')} />
+    </Page>
+  )
+}
+
+function T14Dispute({ next }: NavProps) {
+  return (
+    <Page>
+      <Hero title={'어떤 부분이\n이상한가요?'} />
+      <SectionTitle>대상</SectionTitle>
+      <ListItem icon={<AlertIcon />} title="8월 가스비" desc="₩31,000 · +12.5%" action="대상" />
+      <SectionTitle>이유</SectionTitle>
+      <div className="chip-wrap"><span className="chip selected">평년보다 너무 높아요</span><span className="chip">계량기 수치가 달라요</span><span className="chip">공용부 누수 의심</span><span className="chip">직접 입력</span></div>
+      <SectionTitle>근거 사진</SectionTitle><div className="photo-grid"><div /><div /><button>+</button></div>
+      <SectionTitle>한 줄 설명</SectionTitle><div className="note-box">평소엔 25,000원 정도 나오는데 이번에 31,000원 나왔어요. 누수 가능성이 있어요.</div>
+      <BottomCTA label="이의 제기 보내기" onClick={next} />
+    </Page>
+  )
+}
+
+function T15DisputeStatus() {
+  return (
+    <Page>
+      <Hero eyebrow="진행 중" title={'분쟁이\n진행 중이에요'} desc="평균 4.2일 안에 결과가 나와요" />
+      <StepperHeader current={1} />
+      <Timeline items={['이의 제기 접수|09.04 · 14:32', '집주인에게 알림|09.04 · 14:32', 'BlueSafe 패널 검토 중|진행 중', '판정 + 환불|예상 09.08']} />
+      <Card tone="blue"><strong>걱정하지 마세요</strong><span>결과가 나올 때까지 차액(6,000원)이 자동으로 보류돼요. 부담 없이 기다려요.</span></Card>
+    </Page>
+  )
+}
+
+function T16DisputeResult({ next }: NavProps) {
+  return (
+    <Page>
+      <Hero title={'이의 제기가\n인정됐어요'} desc="환불이 토스 계좌에 들어왔어요" />
+      <Card><Info label="환불 금액" value={krw(6_000)} strong /><Info label="판정" value="임차인 인정" /><Info label="근거" value="계량기 수치 + 평년 비교" /><Info label="입금 시점" value="오늘 16:18" /></Card>
+      <Card tone="soft"><span>“계량기 수치를 비교한 결과 평년 대비 12% 초과 사용이 확인되지 않았어요. 차액 6,000원을 임차인에게 돌려드려요.” — BlueSafe Panel</span></Card>
+      <BottomCTA label="확인" onClick={next} />
+    </Page>
+  )
+}
+
+function T17Moveout({ next }: NavProps) {
+  return (
+    <Page>
+      <Hero title="퇴실 체크리스트" desc="4가지를 마치면 자동 반환이 시작돼요" />
+      <ListItem icon={<CheckIcon />} title="집 상태 사진 찍기" desc="거실·주방·욕실·방" action="완료" />
+      <ListItem icon={<CheckIcon />} title="공과금 정산" desc="8월분까지 완료" action="완료" />
+      <ListItem icon={<CheckIcon />} title="열쇠 반납 확인" desc="카카오톡 답변 받음" action="완료" />
+      <ListItem icon="4" title="집주인 최종 확인 요청" desc="아직" action="필요" />
+      <Card tone="blue"><strong>체크 끝나면 어떻게 돼요?</strong><span>집주인이 7일 동안 이의제기를 안 하면 자동으로 보증금이 풀려요.</span></Card>
+      <BottomCTA label="집주인 확인 요청" onClick={next} />
+    </Page>
+  )
+}
+
+function T18Returned({ next }: NavProps) {
+  return (
+    <Page>
+      <div className="success-block"><div className="success-icon"><CheckIcon /></div><h1>보증금이 돌아왔어요</h1><strong className="big-money">{krw(deposit)}</strong><p>토스뱅크 ••• 8821로 입금됐어요</p></div>
+      <Card><p className="doc-label">SETTLEMENT</p><Info label="원래 보증금" value={krw(deposit)} /><Info label="이의제기 환불" value={`+${krw(6_000)}`} /><Info label="청소 차감" value={`−${krw(50_000)}`} /><Info label="최종 입금" value={krw(14_956_000)} strong /></Card>
+      <BottomCTA label="본국으로 송금" secondary="영수증" onClick={next} />
+    </Page>
+  )
+}
+
+function T19Fx({ next }: NavProps) {
+  return (
+    <Page>
+      <Hero eyebrow="저렴한 환율" title={'본국으로\n송금하기'} />
+      <Card tone="soft"><Info label="보낼 금액" value={krw(14_956_000)} strong /><Info label="받는 금액 (USD)" value="$11,150.45" strong /><p className="notice inside">1 USD = 1,341.30 KRW · XRPL 브릿지 사용</p></Card>
+      <SectionTitle>받는 사람</SectionTitle><ListItem icon={<UserIcon />} title="John Park" desc="Bank of America · ••• 4421" action="USA" /><ListItem icon={<PlusIcon />} title="다른 받는 사람 추가" />
+      <Card tone="blue"><strong>시중 은행 대비 절약</strong><span>+ ₩42,300</span></Card>
+      <BottomCTA label="확인하고 송금" onClick={next} />
+    </Page>
+  )
+}
+
+function T20Activity({ next }: NavProps) {
+  const rows = [['2027 · 6월', '06.07', '본국 송금 완료', 'John Park · USA', '−₩14,956,000'], ['', '06.07', '보증금 반환', '망원동 12-3', '+₩15,000,000'], ['2026 · 9월', '09.08', '이의제기 환불', '8월 가스비', '+₩6,000'], ['', '09.04', '이의제기 접수', '진행 중 → 인정', ''], ['2026 · 6월', '06.01', '월세 납부', 'June', '−₩680,000'], ['', '06.01', '보증금 안전 송금', 'XRPL F2A8…91D3', '−₩15,000,000']]
+  return (
+    <Page bottomNav>
+      <Hero title="활동 내역" />
+      <div className="chip-wrap compact"><span className="chip selected">전체</span><span className="chip">안전송금</span><span className="chip">월세</span><span className="chip">분쟁</span></div>
+      <ActivityRows rows={rows} />
+      <BottomCTA label="임대인 화면 보기" onClick={next} />
+    </Page>
+  )
+}
+
+function L01Invited({ next }: NavProps) {
+  return (
+    <Page>
+      <div className="home-head"><span>BlueSafe</span><div>S</div></div>
+      <Hero title={'안심 임대로\n시작해 볼래요?'} desc="망원동 12-3, 302호 보증금 1,500만원" />
+      <ListItem icon={<ShieldIcon />} title="먹튀 걱정 없는 임차인" desc="월세 미납 시 BlueSafe가 잠긴 보증금에서 우선 차감해서 송금해요." />
+      <ListItem icon={<WalletIcon />} title="월세 자동 정산" desc="매달 1일 자동으로 토스 계좌에 들어와요. 챙길 필요 없어요." />
+      <ListItem icon={<ReceiptIcon />} title="깨끗한 거래 기록" desc="입출금·계약·정산이 한 화면. 종소세 신고 자료까지." />
+      <BottomCTA label="계약서 보기" secondary="나중에" onClick={next} />
+    </Page>
+  )
+}
+
+function L02Verify({ next }: NavProps) {
+  return <Page><StepperHeader current={0} /><Hero title={'임대인\n인증 종류'} desc="월세 받을 명의를 선택해요" /><ListItem icon="개인" title="개인" desc="주민등록증 본인 명의" /><ListItem icon="사업" title="개인사업자" desc="사업자등록증 + 본인 명의" /><ListItem icon="법인" title="법인" desc="법인 인감 + 대표자 인증" /><p className="notice">월세 수령 계좌는 본인 명의여야 해요. BlueSafe가 자동으로 검증해요.</p><BottomCTA label="토스로 인증하기" onClick={next} /></Page>
+}
+
+function L03Property({ next }: NavProps) {
+  return <Page><Hero title="매물 정보" desc="계약서가 자동으로 채워져요" /><div className="photo-banner">[ 매물 사진 4장 ]<span>1/4</span></div><Card tone="soft"><Info label="주소" value="서울시 마포구 망원동 12-3, 302호" /><Info label="면적" value="32㎡ (9.7평)" /><Info label="구조" value="원룸 · 풀옵션" /><Info label="월세" value={`${krw(rent)} / 월`} /><Info label="보증금" value={krw(deposit)} strong /><Info label="관리비" value={`${krw(maintenance)} / 월`} /><Info label="입주 가능일" value="2026.06.01" /></Card><BottomCTA label="계약서 자동 작성" onClick={next} /></Page>
+}
+
+function L04Review({ next }: NavProps) {
+  return <Page><Hero eyebrow="검토 중" title="계약서 확인" desc="필요하면 임차인에게 수정 요청을 보낼 수 있어요" /><Card tone="soft"><p className="doc-label">BLUESAFE TRUST LEASE v1</p><Info label="임차인" value="Sarah Kim" /><Info label="국적" value="USA · F-2" /><Info label="계약 기간" value="12 mo" /><Info label="월세" value={krw(rent)} /><Info label="보증금" value={krw(deposit)} strong /><Info label="입주" value="2026.06.01" /></Card><SectionTitle>집주인 보호 조항</SectionTitle><ListItem icon={<WalletIcon />} title="월세 미납 시 자동 차감" desc="잠긴 보증금에서 월세분 우선 송금" /><ListItem icon={<ReceiptIcon />} title="원상복구 청구" desc="퇴실 시 손상분 차감 가능" /><ListItem icon={<ClockIcon />} title="조기 해지 페널티" desc="6개월 미만 — 1개월분" /><BottomCTA label="동의하고 서명" secondary="수정 요청" onClick={next} /></Page>
+}
+
+function L05Signed({ next }: NavProps) {
+  return <Page><div className="success-block"><div className="success-icon"><CheckIcon /></div><h1>계약 체결 완료</h1><p>보증금 1,500만원이 안전하게 잠겼어요</p></div><Card><p className="doc-label">NEXT STEPS</p><Info label="06.01" value="첫 월세 자동 정산 · ₩680,000" /><Info label="12.01" value="6개월차 평판 리포트" /><Info label="2027.06.07" value="보증금 정산" /></Card><BottomCTA label="대시보드로" secondary="계약서" onClick={next} /></Page>
+}
+
+function L06Home({ go }: NavProps) {
+  return <Page bottomNav><Hero title="안녕하세요, 김선생님" /><div className="home-hero"><span>이번 달 수익</span><strong>₩2,040,000</strong><p>받음 ₩2.04M · 예정 ₩680K</p></div><div className="quick-grid"><button>매물</button><button>월세</button><button>분쟁</button><button>리포트</button></div><SectionTitle right="전체">내 매물 (3)</SectionTitle><ListItem icon="망원" title="망원동 12-3 #302" desc="Sarah K · 잠김" action={krw(rent)} onClick={() => go('l07')} /><ListItem icon="연남" title="연남동 56 #501" desc="공실" action="모집중" /><ListItem icon="망원" title="망원동 12-3 #201" desc="Diego R · 미납 1일" action={krw(rent)} onClick={() => go('l08')} /><BottomSpace /></Page>
+}
+
+function L07Detail() {
+  return <Page><Hero title="망원동 12-3 #302" desc="Sarah Kim · 2026.06.01–2027.05.31" /><Card tone="blue"><span>LOCKED DEPOSIT</span><strong>{krw(deposit)}</strong><span>83일 거주 · 2027.05.31 만료</span></Card><SectionTitle>월세 내역</SectionTitle><ListItem icon="Aug" title="월세 정산" desc="2026.08.01" action={`+${krw(rent)}`} /><ListItem icon="Jul" title="월세 정산" desc="2026.07.01" action={`+${krw(rent)}`} /><ListItem icon="Jun" title="월세 정산" desc="2026.06.01" action={`+${krw(rent)}`} /><SectionTitle>임차인</SectionTitle><ListItem icon="SK" title="Sarah Kim" desc="USA · F-2 · 평판 SBT 인증" action="안전" /></Page>
+}
+
+function L08LateRent({ next }: NavProps) {
+  return <Page><Hero title={'미납이지만\n돈은 들어왔어요'} desc="먼저 보증금에서 우선 차감해 송금했어요" /><Card tone="yellow"><span>미납 임차인</span><strong>Diego Ramirez</strong><span>망원동 12-3 #201 · 1일 지연</span></Card><Card><Info label="월세 자동 차감 완료" value="₩680,000" strong /><Info label="잠금 잔액" value="₩14,320,000" /><Info label="입금 시각" value="오늘 09:01" /></Card><p className="notice">임차인이 7일 안에 갚으면 잠금 잔액이 원복돼요. 그동안 BlueSafe가 알림과 추심을 진행해요.</p><BottomCTA label="확인" secondary="연락하기" onClick={next} /></Page>
+}
+
+function L09IncomingDispute({ next }: NavProps) {
+  return <Page><Hero eyebrow="응답 필요" title={'임차인이\n이의 제기를 했어요'} desc="4일 안에 답하지 않으면 BlueSafe 패널이 판정해요" /><Card tone="yellow"><strong>대상 청구 · 8월 가스비</strong><span>₩31,000 · +12.5% vs avg</span></Card><Card tone="soft"><strong>임차인 주장</strong><span>“평소엔 25,000원 정도 나오는데 이번에 31,000원 나왔어요. 누수 가능성이 있어요.”</span></Card><SectionTitle>어떻게 할까요?</SectionTitle><ListItem icon={<CheckIcon />} title="인정하고 차액 환불" desc="6,000원이 즉시 임차인에게" /><ListItem icon={<ReceiptIcon />} title="근거 제출하고 반박" desc="검침지·계약서 등 첨부" /><ListItem icon={<ShieldIcon />} title="BlueSafe 패널에 위임" desc="평균 4.2일 소요" /><BottomCTA label="인정하고 환불" onClick={next} /></Page>
+}
+
+function L10Earnings({ next }: NavProps) {
+  return <Page bottomNav><Hero title="수익 리포트" desc="2026 · YTD" /><div className="report-card"><span>YTD INCOME</span><strong>₩16,320,000</strong><p>+8.2% YoY</p></div><div className="month-bars">{'JFMAMJJASOND'.split('').map((m, i) => <span key={`${m}-${i}`}>{m}</span>)}</div><SectionTitle>매물별</SectionTitle><ListItem icon={<HomeIcon />} title="망원동 12-3 #302" desc="Sarah Kim · 8mo" action="₩5,440,000" /><ListItem icon={<HomeIcon />} title="망원동 12-3 #201" desc="Diego Ramirez · 8mo" action="₩5,440,000" /><ListItem icon={<HomeIcon />} title="연남동 56 #501" desc="비어있음 4개월" action="₩5,440,000" /><Card tone="blue"><strong>종합소득세 신고용 자료</strong><span>내려받기 →</span></Card><BottomCTA label="정산 화면 보기" onClick={next} /></Page>
+}
+
+function L11DepositRelease({ next }: NavProps) {
+  return <Page><Hero eyebrow="응답 필요" title={'퇴실 확인 +\n보증금 정산'} desc="응답 없으면 7일 후 자동 반환돼요" /><Card tone="soft"><Info label="잠긴 보증금" value={krw(deposit)} strong /></Card><SectionTitle>차감 항목</SectionTitle><ListItem icon={<ReceiptIcon />} title="청소 (전문 업체)" desc="영수증 첨부" action="−₩50,000" /><ListItem icon={<ReceiptIcon />} title="벽지 손상" desc="사진 2장" action="−₩0" /><ListItem icon={<ReceiptIcon />} title="가전 분실" desc="없음" action="−₩0" /><Card><Info label="임차인 환불액" value="₩14,950,000" strong /><Info label="내가 받는 차감금" value="₩50,000" /></Card><BottomCTA label="동의하고 정산" secondary="거부" onClick={next} /></Page>
+}
+
+function L12Activity() {
+  const rows = [['2026 · 8월', '08.01', '월세 정산 — Sarah K', '#302', '+₩680,000'], ['', '08.02', '월세 자동 차감 — Diego R', '보증금에서', '+₩680,000'], ['', '08.04', '이의 환불 — Sarah K', '8월 가스', '−₩6,000'], ['2026 · 7월', '07.01', '월세 정산 — Sarah K', '#302', '+₩680,000'], ['', '07.01', '월세 정산 — Diego R', '#201', '+₩680,000']]
+  return <Page bottomNav><Hero title="거래 내역" /><div className="chip-wrap compact"><span className="chip selected">전체</span><span className="chip">월세</span><span className="chip">보증금</span><span className="chip">차감</span></div><ActivityRows rows={rows} /><BottomSpace /></Page>
+}
+
+function Page({ children, bottomNav = false }: { children: React.ReactNode; bottomNav?: boolean }) {
+  return <section className={bottomNav ? 'page has-bottom-nav' : 'page'}>{children}</section>
+}
+
+function Hero({ title, desc }: { eyebrow?: string; title: string; desc?: string }) {
+  return <div className="hero"><h1>{title}</h1>{desc && <p>{desc}</p>}</div>
+}
+
+function TopBar({ onBack }: { title: string; onBack: () => void }) {
+  return <header className="topbar"><button onClick={onBack} aria-label="뒤로"><ChevronLeftIcon /></button><strong aria-hidden="true" /><span /></header>
+}
+
+function StatusBar({ light = false }: { light?: boolean }) {
+  return <div className={light ? 'status light' : 'status'}><span>9:41</span><span>5G 100%</span></div>
+}
+
+function HomeIndicator({ light = false }: { light?: boolean }) {
+  return <div className={light ? 'home-indicator light' : 'home-indicator'}><span /></div>
+}
+
+function BottomCTA({ label, secondary, onClick }: { label: string; secondary?: string; onClick: () => void }) {
+  return <div className={secondary ? 'bottom-cta has-secondary' : 'bottom-cta'}>{secondary && <button className="secondary">{secondary}</button>}<button className="primary" onClick={onClick}>{label}</button></div>
+}
+
+function Card({ children, tone = 'white' }: { children: React.ReactNode; tone?: 'white' | 'soft' | 'blue' | 'yellow' }) {
+  return <div className={`card ${tone}`}>{children}</div>
+}
+
+function SectionTitle({ children, right }: { children: React.ReactNode; right?: string }) {
+  return <div className="section-title"><h2>{children}</h2>{right && <span>{right}</span>}</div>
+}
+
+function ListItem({ icon, title, desc, action, onClick }: { icon: React.ReactNode; title: string; desc?: string; action?: string; onClick?: () => void }) {
+  return <button className="list-item" onClick={onClick}><span className="list-icon">{icon}</span><span className="list-copy"><strong>{title}</strong>{desc && <small>{desc}</small>}</span>{action && <em>{action}</em>}</button>
+}
+
+function Info({ label, value, strong = false, mono = false }: { label: string; value: string; strong?: boolean; mono?: boolean }) {
+  return <div className="info"><span>{label}</span><strong className={`${strong ? 'strong' : ''} ${mono ? 'mono' : ''}`}>{value}</strong></div>
+}
+
+function InfoList({ rows }: { rows: string[][] }) {
+  return <Card>{rows.map(([a, b]) => <Info key={a} label={a} value={b} />)}</Card>
+}
+
+function Checklist({ items }: { items: string[] }) {
+  return <>{items.map((item) => <ListItem key={item} icon={<CheckIcon />} title={item} />)}</>
+}
+
+function Bill({ title, value, diff, warn = false }: { title: string; value: number; diff: string; warn?: boolean }) {
+  return <div className="bill"><span className={warn ? 'bill-icon warn' : 'bill-icon'}>{warn ? '!' : <CheckIcon />}</span><div><strong>{title}</strong><small>8월 청구</small></div><div className="bill-tail"><b>{krw(value)}</b><em className={warn ? 'warn' : ''}>{diff}</em></div></div>
+}
+
+function VaultDiagram() {
+  return (
+    <div className="onboarding-visual vault">
+      <svg className="vault-lines" viewBox="0 0 327 232" preserveAspectRatio="none" aria-hidden="true"><path d="M 68 92 C 68 132, 110 150, 140 158" /><path d="M 259 92 C 259 132, 217 150, 187 158" /></svg>
+      <div className="party-card tenant"><UserIcon /><span>임차인</span></div>
+      <div className="party-card landlord"><KeyIcon /><span>임대인</span></div>
+      <div className="vault-core"><LockIcon /><strong>VAULT</strong><small>XRPL Escrow</small></div>
+    </div>
+  )
+}
+
+function ExamplePanel({ kind }: { kind: 'return' | 'bills' | 'proof' }) {
+  if (kind === 'return') {
+    return (
+      <div className="example-panel">
+        <div className="example-calendar">
+          <span>자동 반환 예정일</span>
+          <strong>2027.06.07</strong>
+          <small>응답 없으면 자동 반환</small>
+        </div>
+        <div className="example-chip">D-236</div>
+      </div>
+    )
+  }
+
+  if (kind === 'bills') {
+    return (
+      <div className="example-panel list-preview">
+        <div><CheckIcon /><span>전기</span><b>정상</b></div>
+        <div className="warn"><AlertIcon /><span>가스</span><b>+12.5%</b></div>
+        <div><CheckIcon /><span>수도</span><b>정상</b></div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="example-panel proof-preview">
+      <div>
+        <span>XRPL TX</span>
+        <strong>F2A8…91D3</strong>
+        <small>Explorer에서 직접 확인</small>
+      </div>
+      <ShieldIcon />
+    </div>
+  )
+}
+
+function Dots({ active, count }: { active: number; count: number }) {
+  return <div className="dots">{Array.from({ length: count }, (_, i) => <button key={i} className={i === active ? 'active' : ''} />)}</div>
+}
+
+function StepperHeader({ current }: { current: number }) {
+  return (
+    <div className="stepper-head">
+      {[0, 1, 2].map((n) => (
+        <span key={n} className={n <= current ? 'active' : ''}>
+          {n + 1}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function Timeline({ items }: { items: string[] }) {
+  return <Card tone="soft">{items.map((raw, i) => { const [title, desc] = raw.split('|'); return <div className="step-row" key={title}><span className={i < 2 ? 'done' : ''}>{i < 2 ? <CheckIcon /> : i + 1}</span><div><strong>{title}</strong><small>{desc}</small></div></div> })}</Card>
+}
+
+function ActivityRows({ rows }: { rows: string[][] }) {
+  return <>{rows.map(([section, date, title, desc, value], i) => <div key={`${date}-${title}-${i}`}>{section && <SectionTitle>{section}</SectionTitle>}<div className="activity-row"><span>{date}</span><div><strong>{title}</strong><small>{desc}</small></div><b>{value}</b></div></div>)}</>
+}
+
+function TenantNav({ active, go }: { active: ScreenId; go: (id: ScreenId) => void }) {
+  return <nav className="bottom-nav four-tabs">{[['t09', '홈', <HomeIcon />], ['t20', '내역', <HistoryIcon />], ['t13', '보호', <ShieldIcon />], ['t12', '내정보', <UserIcon />]].map(([id, label, icon]) => <button key={id as string} className={active === id ? 'active' : ''} onClick={() => go(id as ScreenId)}>{icon}<span>{label as string}</span></button>)}</nav>
+}
+
+function LandlordNav({ active, go }: { active: ScreenId; go: (id: ScreenId) => void }) {
+  return <nav className="bottom-nav four-tabs">{[['l06', '홈', <HomeIcon />], ['l10', '수익', <ChartIcon />], ['l12', '계약', <ReceiptIcon />], ['l02', '내정보', <UserIcon />]].map(([id, label, icon]) => <button key={id as string} className={active === id ? 'active' : ''} onClick={() => go(id as ScreenId)}>{icon}<span>{label as string}</span></button>)}</nav>
+}
+
+function TimeBox({ value, label }: { value: string; label: string }) {
+  return <div><strong>{value}</strong><span>{label}</span></div>
+}
+
+function IconBox({ children }: { children: React.ReactNode }) {
+  return <span className="icon-box">{children}</span>
+}
+
+function BottomSpace() {
+  return <div className="bottom-space" />
+}
+
+function krw(value: number) {
+  return `₩${value.toLocaleString('ko-KR')}`
+}
+
+function won(value: number) {
+  return `${value.toLocaleString('ko-KR')}원`
+}
+
+function isChromeLessScreen(id: ScreenId) {
+  return id === 't02' || id === 't09' || id === 'l06'
+}
+
+function ChevronLeftIcon() { return <svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></svg> }
+function ShieldIcon() { return <svg viewBox="0 0 24 24"><path d="M12 3 19 6v5c0 4.5-2.9 8.4-7 10-4.1-1.6-7-5.5-7-10V6l7-3Z" /><path d="m9 12 2 2 4-5" /></svg> }
+function CheckIcon() { return <svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></svg> }
+function LockIcon() { return <svg viewBox="0 0 24 24"><path d="M7 10V8a5 5 0 0 1 10 0v2" /><rect x="5" y="10" width="14" height="11" rx="2" /></svg> }
+function UserIcon() { return <svg viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0" /><circle cx="12" cy="7" r="4" /></svg> }
+function KeyIcon() { return <svg viewBox="0 0 24 24"><circle cx="7.5" cy="14.5" r="4.5" /><path d="M11 11 21 1M16 6l2 2M14 8l2 2" /></svg> }
+function ClockIcon() { return <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg> }
+function ReceiptIcon() { return <svg viewBox="0 0 24 24"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3Z" /><path d="M9 8h6M9 12h6M9 16h4" /></svg> }
+function HomeIcon() { return <svg viewBox="0 0 24 24"><path d="m3 11 9-8 9 8" /><path d="M5 10v11h14V10" /></svg> }
+function ChartIcon() { return <svg viewBox="0 0 24 24"><path d="M4 19V5M4 19h16" /><path d="M8 16v-5M12 16V8M16 16v-8" /></svg> }
+function WalletIcon() { return <svg viewBox="0 0 24 24"><path d="M4 7h16v12H4z" /><path d="M4 7l3-4h13v4" /><path d="M17 13h.01" /></svg> }
+function HistoryIcon() { return <svg viewBox="0 0 24 24"><path d="M7 4h10a2 2 0 0 1 2 2v14l-3-2-3 2-3-2-3 2V6a2 2 0 0 1 2-2Z" /><path d="M10 9h6M10 13h6" /></svg> }
+function AlertIcon() { return <svg viewBox="0 0 24 24"><path d="M12 3 2 21h20L12 3Z" /><path d="M12 9v5M12 18h.01" /></svg> }
+function PlusIcon() { return <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg> }
+
+export default App
