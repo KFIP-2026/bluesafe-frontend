@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from 'react'
 import './App.css'
 import { backendConfig, bluesafeApi, type BackendContract, type DisputeCase, type EvidenceFile, type SettlementRecord } from './api/bluesafe'
+import { connectInternalWallet } from './api/internalWallet'
 import reputationMascot from './assets/reputation-mascot.png'
 
 type ScreenId =
-  | 't01' | 'role' | 't02' | 't03' | 't04' | 't05' | 't06' | 't07' | 't08' | 't09' | 't10'
+  | 't01' | 'role' | 'wallet' | 't02' | 't03' | 't04' | 't05' | 't06' | 't07' | 't08' | 't09' | 't10'
   | 't11' | 't12' | 't13' | 't14' | 't15' | 't16' | 't17' | 't18' | 't19' | 't20'
   | 'l01' | 'l02' | 'l03' | 'l04' | 'l05' | 'l06' | 'l07' | 'l08' | 'l09' | 'l10'
   | 'l11' | 'l12'
@@ -26,7 +27,14 @@ type NavProps = {
   error: string
 }
 
+type UserRole = 'tenant' | 'landlord'
+
 type AppModel = {
+  selectedRole: UserRole
+  walletConnected: boolean
+  walletProvider: string
+  walletName: string
+  walletNetwork: string
   tenantId: string
   landlordId: string
   tenantAddress: string
@@ -40,6 +48,8 @@ type AppModel = {
 }
 
 type AppActions = {
+  selectRole: (role: UserRole) => void
+  connectWallet: () => Promise<void>
   createDraftContract: () => Promise<BackendContract>
   lockDeposit: () => Promise<void>
   loadSettlements: () => Promise<void>
@@ -120,11 +130,17 @@ const landlordScreens: ScreenDef[] = [
   { id: 'l12', label: '거래 내역', group: '임대인', tab: 'landlord', component: L12Activity },
 ]
 
-const allScreens = [...tenantScreens, ...landlordScreens]
+const walletScreen: ScreenDef = { id: 'wallet', label: '지갑 연결', group: tenantScreens[0].group, component: WalletConnect }
+const allScreens = [...tenantScreens.slice(0, 2), walletScreen, ...tenantScreens.slice(2), ...landlordScreens]
 
 function App() {
   const [screenId, setScreenId] = useState<ScreenId>('t01')
   const [app, setApp] = useState<AppModel>({
+    selectedRole: 'tenant',
+    walletConnected: false,
+    walletProvider: '',
+    walletName: '',
+    walletNetwork: '',
     tenantId: 'tenant_sarah_kim',
     landlordId: 'landlord_kim',
     tenantAddress: 'rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh',
@@ -162,6 +178,27 @@ function App() {
     }
   }
   const actions: AppActions = {
+    selectRole: (role) => {
+      setApp((prev) => ({ ...prev, selectedRole: role }))
+    },
+    connectWallet: async () => {
+      await run('BlueSafe 내부 XRPL 지갑 연결', async () => {
+        const session = await connectInternalWallet(app.selectedRole)
+        setApp((prev) => {
+          const nextState = {
+            ...prev,
+            walletConnected: true,
+            walletProvider: session.provider,
+            walletName: session.account,
+            walletNetwork: session.network,
+          }
+
+          return prev.selectedRole === 'tenant'
+            ? { ...nextState, tenantAddress: session.account }
+            : { ...nextState, landlordAddress: session.account }
+        })
+      })
+    },
     createDraftContract: async () => {
       if (app.contract) return app.contract
       return run('BE2 계약 draft 생성', async () => {
@@ -382,9 +419,12 @@ function T01Entry({ next }: NavProps) {
   )
 }
 
-function RoleSelect({ go }: NavProps) {
+function RoleSelect({ go, actions }: NavProps) {
   const [role, setRole] = useState<'tenant' | 'landlord'>('tenant')
-  const start = () => go(role === 'tenant' ? 't02' : 'l01')
+  const start = () => {
+    actions.selectRole(role)
+    go('wallet')
+  }
 
   return (
     <Page>
@@ -403,6 +443,59 @@ function RoleSelect({ go }: NavProps) {
           </button>
         </div>
         <div className="entry-bottom role-bottom"><button className="white-cta" onClick={start}>시작하기</button><span>{role === 'tenant' ? '임차인 보호 플로우로 시작' : '임대인 계약 플로우로 시작'}</span></div>
+      </div>
+    </Page>
+  )
+}
+
+function WalletConnect({ go, app, actions, error }: NavProps) {
+  const [connecting, setConnecting] = useState(false)
+  const isTenant = app.selectedRole === 'tenant'
+  const address = isTenant ? app.tenantAddress : app.landlordAddress
+  const shortAddress = `${address.slice(0, 6)}...${address.slice(-6)}`
+  const continueToRole = () => go(isTenant ? 't02' : 'l01')
+  const connect = async () => {
+    setConnecting(true)
+    try {
+      await actions.connectWallet()
+    } finally {
+      setConnecting(false)
+    }
+  }
+
+  return (
+    <Page>
+      <div className="wallet-page">
+        <Hero
+          title={'BlueSafe 지갑을\n준비해요'}
+          desc={isTenant ? '보증금을 안전하게 보관할 내부 XRPL 지갑이에요.' : '계약과 정산을 확인할 내부 XRPL 지갑이에요.'}
+        />
+        <div className="wallet-visual" aria-hidden="true">
+          <div className="wallet-orbit">
+            <span />
+            <span />
+            <strong>XRPL</strong>
+          </div>
+        </div>
+        <div className="wallet-card">
+          <div>
+            <span>{app.walletConnected ? '연결 완료' : '연결 대기'}</span>
+            <strong>{app.walletConnected ? shortAddress : '내부 XRPL 지갑을 생성해주세요'}</strong>
+            <p>{app.walletConnected ? `${app.walletProvider} · ${app.walletNetwork || 'XRPL'} · 서버 보관` : 'BlueSafe 서버가 지갑을 만들고 주소만 앱에 연결해요.'}</p>
+          </div>
+        </div>
+        <div className="wallet-points">
+          <span>멀티시그 보관</span>
+          <span>온체인 영수증</span>
+          <span>자동 반환 추적</span>
+        </div>
+        {error && <p className="wallet-error">{error}</p>}
+        <div className="entry-bottom wallet-bottom">
+          <button className="white-cta" onClick={app.walletConnected ? continueToRole : connect}>
+            {app.walletConnected ? '계속하기' : connecting ? '준비 중' : '내 지갑 만들기'}
+          </button>
+          <span>{isTenant ? '임차인 플로우로 이어져요' : '임대인 플로우로 이어져요'}</span>
+        </div>
       </div>
     </Page>
   )

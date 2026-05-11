@@ -38,6 +38,7 @@ npm run lint
 VITE_BE1_URL=http://localhost:3000
 VITE_BE2_URL=http://localhost:3100
 VITE_BLUESAFE_AUTH_TOKEN=
+VITE_WALLET_API_URL=http://localhost:3000
 ```
 
 - `VITE_BE1_URL`: `KFIP-2026/Bluesafe-BE1` NestJS 백엔드
