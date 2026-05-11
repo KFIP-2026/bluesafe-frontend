@@ -1,10 +1,10 @@
-import { useState, type ChangeEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from 'react'
 import './App.css'
-import { backendConfig, bluesafeApi, type BackendContract, type DisputeCase, type EvidenceFile } from './api/bluesafe'
+import { backendConfig, bluesafeApi, type BackendContract, type DisputeCase, type EvidenceFile, type SettlementRecord } from './api/bluesafe'
 import reputationMascot from './assets/reputation-mascot.png'
 
 type ScreenId =
-  | 't01' | 't02' | 't03' | 't04' | 't05' | 't06' | 't07' | 't08' | 't09' | 't10'
+  | 't01' | 'role' | 't02' | 't03' | 't04' | 't05' | 't06' | 't07' | 't08' | 't09' | 't10'
   | 't11' | 't12' | 't13' | 't14' | 't15' | 't16' | 't17' | 't18' | 't19' | 't20'
   | 'l01' | 'l02' | 'l03' | 'l04' | 'l05' | 'l06' | 'l07' | 'l08' | 'l09' | 'l10'
   | 'l11' | 'l12'
@@ -35,12 +35,17 @@ type AppModel = {
   xrplContract?: BackendContract
   evidence?: EvidenceFile
   dispute?: DisputeCase
+  settlements: SettlementRecord[]
   backendEvents: string[]
 }
 
 type AppActions = {
   createDraftContract: () => Promise<BackendContract>
   lockDeposit: () => Promise<void>
+  loadSettlements: () => Promise<void>
+  landlordSignContract: () => Promise<void>
+  landlordAcceptDispute: () => Promise<void>
+  landlordApproveSettlement: () => Promise<void>
   uploadEvidence: (input: {
     category: 'contract_pdf' | 'utility_bill' | 'photo' | 'receipt' | 'other'
     fileName: string
@@ -78,6 +83,7 @@ const reputationStages: ReputationStage[] = [
 
 const tenantScreens: ScreenDef[] = [
   { id: 't01', label: '시작', group: '임차인', component: T01Entry },
+  { id: 'role', label: '역할 선택', group: '임차인', component: RoleSelect },
   { id: 't02', label: '온보딩', group: '임차인', component: T02Onboarding },
   { id: 't03', label: '토스 인증', group: '임차인', component: T03Auth },
   { id: 't04', label: 'ARC KYC', group: '임차인', component: T04Kyc },
@@ -123,6 +129,7 @@ function App() {
     landlordId: 'landlord_kim',
     tenantAddress: 'rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh',
     landlordAddress: 'rDTXLQ7ZKZVKz33zJbHjgVShjsBnqMBhmN',
+    settlements: [],
     backendEvents: ['프론트 데모 상태로 시작했어요'],
   })
   const [busy, setBusy] = useState(false)
@@ -165,6 +172,8 @@ function App() {
               status: 'draft' as const,
               tenantId: app.tenantId,
               landlordId: app.landlordId,
+              startsAt: demoLeaseDates().startsAt.toISOString(),
+              endsAt: demoLeaseDates().endsAt.toISOString(),
             }
         setApp((prev) => ({ ...prev, contract }))
         return contract
@@ -199,6 +208,8 @@ function App() {
               depositEscrowTxHash: 'F2A8B7C91D3DEMOXRPLESCROWTXHASH',
               depositEscrowSequence: 824,
               signerListTxHash: 'A91D3DEMO2OF3MULTISIGTXHASH',
+              startsAt: demoLeaseDates().startsAt.toISOString(),
+              endsAt: demoLeaseDates().endsAt.toISOString(),
             }
 
         const txHash = xrplContract.depositEscrowTxHash ?? 'F2A8B7C91D3DEMOXRPLESCROWTXHASH'
@@ -215,6 +226,64 @@ function App() {
         }
 
         setApp((prev) => ({ ...prev, contract: anchored, xrplContract }))
+      })
+    },
+    loadSettlements: async () => {
+      const contractId = app.contract?.id
+      if (!contractId || !backendConfig.hasBe2) return
+      await run('BE2 정산 상태 조회', async () => {
+        const page = await bluesafeApi.listSettlements(contractId)
+        setApp((prev) => ({ ...prev, settlements: page.items }))
+      })
+    },
+    landlordSignContract: async () => {
+      await run('BE2 임대인 계약 동의', async () => {
+        const contract = app.contract ?? await actions.createDraftContract()
+        const signed = backendConfig.hasBe2
+          ? await bluesafeApi.updateOperationalContractStatus(contract.id, contract.status === 'draft' ? 'escrow_pending' : contract.status)
+          : { ...contract, status: contract.status === 'draft' ? 'escrow_pending' as const : contract.status }
+        setApp((prev) => ({ ...prev, contract: signed }))
+      })
+    },
+    landlordAcceptDispute: async () => {
+      await run('BE2 임대인 환불 판정', async () => {
+        const currentDispute = app.dispute ?? {
+          id: 'dsp_demo_landlord_001',
+          contractId: app.contract?.id ?? 'ctr_demo_001',
+          raisedBy: 'tenant' as const,
+          reasonCode: 'UTILITY_OVER_AVERAGE',
+          status: 'under_review' as const,
+        }
+        const dispute = backendConfig.hasBe2 && app.dispute
+          ? await bluesafeApi.decideDispute(currentDispute.id, 'partial_manual', '임대인이 차액 6,000원 환불을 인정')
+          : { ...currentDispute, status: 'decided' as const, decision: 'partial_manual' }
+        setApp((prev) => ({ ...prev, dispute }))
+      })
+    },
+    landlordApproveSettlement: async () => {
+      await run('BE2 보증금 정산 승인', async () => {
+        const contract = app.contract ?? await actions.createDraftContract()
+        const settlement = app.settlements[0]
+        if (backendConfig.hasBe2 && settlement) {
+          const updated = await bluesafeApi.updateSettlementStatus(settlement.id, {
+            status: 'confirmed',
+            amountMinor: 14_950_000,
+            currencyCode: 'KRW',
+            batchId: `settlement-${contract.id}`,
+          })
+          setApp((prev) => ({ ...prev, settlements: [updated, ...prev.settlements.slice(1)] }))
+          return
+        }
+        setApp((prev) => ({
+          ...prev,
+          settlements: [{
+            id: 'set_demo_001',
+            contractId: contract.id,
+            status: 'confirmed',
+            amountMinor: 14_950_000,
+            currencyCode: 'KRW',
+          }],
+        }))
       })
     },
     uploadEvidence: async (input) => {
@@ -310,6 +379,32 @@ function T01Entry({ next }: NavProps) {
       </div>
       <div className="entry-bottom"><button className="white-cta" onClick={next}>시작하기</button><span>토스 인증으로 30초 만에 가입</span></div>
     </div>
+  )
+}
+
+function RoleSelect({ go }: NavProps) {
+  const [role, setRole] = useState<'tenant' | 'landlord'>('tenant')
+  const start = () => go(role === 'tenant' ? 't02' : 'l01')
+
+  return (
+    <Page>
+      <div className="role-page">
+        <Hero title={'어떤 계약을\n시작할까요?'} desc="역할에 맞는 화면으로 안내할게요." />
+        <div className="role-select-list" aria-label="역할 선택">
+          <button className={role === 'tenant' ? 'active' : ''} onClick={() => setRole('tenant')}>
+            <span>임차인</span>
+            <strong>보증금을 안전하게 맡길래요</strong>
+            <small>계약 확인, 보증금 락업, 자동 반환</small>
+          </button>
+          <button className={role === 'landlord' ? 'active' : ''} onClick={() => setRole('landlord')}>
+            <span>임대인</span>
+            <strong>계약과 정산을 관리할래요</strong>
+            <small>계약 확인, 월세 정산, 반환 승인</small>
+          </button>
+        </div>
+        <div className="entry-bottom role-bottom"><button className="white-cta" onClick={start}>시작하기</button><span>{role === 'tenant' ? '임차인 보호 플로우로 시작' : '임대인 계약 플로우로 시작'}</span></div>
+      </div>
+    </Page>
   )
 }
 
@@ -506,6 +601,8 @@ function T08Receipt({ next, app }: NavProps) {
 }
 
 function T09Home({ go, app, error }: NavProps) {
+  const lease = getLeaseMetrics(app)
+
   return (
     <Page bottomNav>
       <div className="home-head"><span>BlueSafe</span></div>
@@ -517,15 +614,15 @@ function T09Home({ go, app, error }: NavProps) {
           <p>멀티시그로 안전하게 보관해요</p>
         </div>
         <div className="contract-card">
-          <div className="progress-ring" aria-label="계약 만료까지 282일 남음">
-            <strong>282</strong>
+          <div className="progress-ring" style={{ '--progress': `${lease.progress}%` } as CSSProperties} aria-label={`계약 만료까지 ${lease.daysLeft}일 남음`}>
+            <strong>{lease.daysLeft}</strong>
             <span>일 남음</span>
           </div>
           <p>계약 만료까지</p>
         </div>
         <div className="living-card">
           <span>거주</span>
-          <strong>83일차</strong>
+          <strong>{lease.livedDays}일차</strong>
         </div>
         <div className="quick-grid"><button>리포트</button><button onClick={() => go('t13')}>공과금</button><button onClick={() => go('t10')}>반환</button><button>계약서</button></div>
       </div>
@@ -539,18 +636,33 @@ function T09Home({ go, app, error }: NavProps) {
   )
 }
 
-function T10Countdown() {
+function T10Countdown({ app, actions }: NavProps) {
+  const lease = getLeaseMetrics(app)
+  const settlement = app.settlements[0]
+  const didLoadSettlements = useRef(false)
+
+  useEffect(() => {
+    if (didLoadSettlements.current) return
+    didLoadSettlements.current = true
+    void actions.loadSettlements()
+  }, [actions])
+
   return (
     <Page>
       <Hero title="자동 반환까지" desc="집주인이 응답하지 않아도 자동으로 풀려요" />
-      <div className="time-grid"><TimeBox value="06" label="일" /><TimeBox value="14" label="시간" /><TimeBox value="32" label="분" /></div>
+      <div className="time-grid"><TimeBox value={pad2(lease.returnLeft.days)} label="일" /><TimeBox value={pad2(lease.returnLeft.hours)} label="시간" /><TimeBox value={pad2(lease.returnLeft.minutes)} label="분" /></div>
       <div className="return-progress">
-        <div className="return-progress-head"><span>반환 진행률</span><strong>72%</strong></div>
-        <div className="return-track"><span /><b className="safe-emoji" aria-label="돈">💰</b></div>
+        <div className="return-progress-head"><span>반환 진행률</span><strong>{lease.progress}%</strong></div>
+        <div className="return-track"><span style={{ width: `${lease.progress}%` }} /><b className="safe-emoji" aria-label="돈">💰</b></div>
       </div>
-      <Card tone="blue"><strong>아무것도 안 해도 돼요</strong><span>이 시간이 지나면 보증금 15,000,000원이 자동으로 토스 계좌로 들어와요.</span></Card>
+      <Card tone="blue"><strong>{settlement ? `정산 상태: ${settlement.status}` : '아무것도 안 해도 돼요'}</strong><span>{formatDate(lease.finishAfter)} 이후 보증금 15,000,000원이 자동 반환 대상이 돼요.</span></Card>
       <SectionTitle>진행 상황</SectionTitle>
-      <Timeline items={['퇴실 체크리스트 완료|2027.05.31 14:02', '집주인 확인 요청 발송|2027.05.31 14:03', '집주인 응답 대기|7일 안에 응답 없으면 자동 반환', '보증금 반환|2027.06.07 (예상)']} />
+      <Timeline items={[
+        `계약 시작|${formatDate(lease.startsAt)}`,
+        `계약 만료|${formatDate(lease.endsAt)}`,
+        `자동 반환 대기|${lease.returnLeft.totalMs > 0 ? `${lease.returnLeft.days}일 남음` : '반환 조건 도달'}`,
+        `보증금 반환|${formatDate(lease.finishAfter)} (예상)`,
+      ]} />
     </Page>
   )
 }
@@ -715,7 +827,7 @@ function T20Activity({ next }: NavProps) {
 function L01Invited({ next }: NavProps) {
   return (
     <Page>
-      <div className="home-head"><span>BlueSafe</span><div>S</div></div>
+      <div className="home-head"><span>BlueSafe</span></div>
       <Hero title={'안심 임대로\n시작해 볼래요?'} desc="망원동 12-3, 302호 보증금 1,500만원" />
       <ListItem icon={<ShieldIcon />} title="먹튀 걱정 없는 임차인" desc="월세 미납 시 BlueSafe가 잠긴 보증금에서 우선 차감해서 송금해요." />
       <ListItem icon={<WalletIcon />} title="월세 자동 정산" desc="매달 1일 자동으로 토스 계좌에 들어와요. 챙길 필요 없어요." />
@@ -726,15 +838,25 @@ function L01Invited({ next }: NavProps) {
 }
 
 function L02Verify({ next }: NavProps) {
-  return <Page><StepperHeader current={0} /><Hero title={'임대인\n인증 종류'} desc="월세 받을 명의를 선택해요" /><ListItem icon="개인" title="개인" desc="주민등록증 본인 명의" /><ListItem icon="사업" title="개인사업자" desc="사업자등록증 + 본인 명의" /><ListItem icon="법인" title="법인" desc="법인 인감 + 대표자 인증" /><p className="notice">월세 수령 계좌는 본인 명의여야 해요. BlueSafe가 자동으로 검증해요.</p><BottomCTA label="토스로 인증하기" onClick={next} /></Page>
+  const [open, setOpen] = useState(false)
+  return <Page><StepperHeader current={0} /><Hero title={'임대인\n인증 종류'} desc="월세 받을 명의를 선택해요" /><ListItem icon="개인" title="개인" desc="주민등록증 본인 명의" /><ListItem icon="사업" title="개인사업자" desc="사업자등록증 + 본인 명의" /><ListItem icon="법인" title="법인" desc="법인 인감 + 대표자 인증" /><p className="notice">월세 수령 계좌는 본인 명의여야 해요. BlueSafe가 자동으로 검증해요.</p><BottomCTA label="토스로 인증하기" onClick={() => setOpen(true)} /><ActionModal open={open} title="임대인 인증 준비 완료" onClose={() => setOpen(false)} primaryLabel="다음" onPrimary={next}><p>실제 Toss/OIDC 토큰이 연결되면 BE2 요청의 landlord role 토큰으로 사용해요.</p><Info label="role" value="landlord" /><Info label="auth" value="ready" /></ActionModal></Page>
 }
 
 function L03Property({ next }: NavProps) {
   return <Page><Hero title="매물 정보" desc="계약서가 자동으로 채워져요" /><div className="photo-banner">[ 매물 사진 4장 ]<span>1/4</span></div><Card tone="soft"><Info label="주소" value="서울시 마포구 망원동 12-3, 302호" /><Info label="면적" value="32㎡ (9.7평)" /><Info label="구조" value="원룸 · 풀옵션" /><Info label="월세" value={`${krw(rent)} / 월`} /><Info label="보증금" value={krw(deposit)} strong /><Info label="관리비" value={`${krw(maintenance)} / 월`} /><Info label="입주 가능일" value="2026.06.01" /></Card><BottomCTA label="계약서 자동 작성" onClick={next} /></Page>
 }
 
-function L04Review({ next }: NavProps) {
-  return <Page><Hero eyebrow="검토 중" title="계약서 확인" desc="필요하면 임차인에게 수정 요청을 보낼 수 있어요" /><Card tone="soft"><p className="doc-label">BLUESAFE TRUST LEASE v1</p><Info label="임차인" value="Sarah Kim" /><Info label="국적" value="USA · F-2" /><Info label="계약 기간" value="12 mo" /><Info label="월세" value={krw(rent)} /><Info label="보증금" value={krw(deposit)} strong /><Info label="입주" value="2026.06.01" /></Card><SectionTitle>집주인 보호 조항</SectionTitle><ListItem icon={<WalletIcon />} title="월세 미납 시 자동 차감" desc="잠긴 보증금에서 월세분 우선 송금" /><ListItem icon={<ReceiptIcon />} title="원상복구 청구" desc="퇴실 시 손상분 차감 가능" /><ListItem icon={<ClockIcon />} title="조기 해지 페널티" desc="6개월 미만 — 1개월분" /><BottomCTA label="동의하고 서명" secondary="수정 요청" onClick={next} /></Page>
+function L04Review({ next, actions, busy, error }: NavProps) {
+  const [open, setOpen] = useState(false)
+  const sign = async () => {
+    try {
+      await actions.landlordSignContract()
+      setOpen(true)
+    } catch {
+      return
+    }
+  }
+  return <Page><Hero eyebrow="검토 중" title="계약서 확인" desc="필요하면 임차인에게 수정 요청을 보낼 수 있어요" /><Card tone="soft"><p className="doc-label">BLUESAFE TRUST LEASE v1</p><Info label="임차인" value="Sarah Kim" /><Info label="국적" value="USA · F-2" /><Info label="계약 기간" value="12 mo" /><Info label="월세" value={krw(rent)} /><Info label="보증금" value={krw(deposit)} strong /><Info label="입주" value="2026.06.01" /></Card><SectionTitle>집주인 보호 조항</SectionTitle><ListItem icon={<WalletIcon />} title="월세 미납 시 자동 차감" desc="잠긴 보증금에서 월세분 우선 송금" /><ListItem icon={<ReceiptIcon />} title="원상복구 청구" desc="퇴실 시 손상분 차감 가능" /><ListItem icon={<ClockIcon />} title="조기 해지 페널티" desc="6개월 미만 — 1개월분" /><BackendInline error={error} /><BottomCTA label={busy ? '서명 저장 중' : '동의하고 서명'} secondary="수정 요청" onClick={sign} /><ActionModal open={open} title="계약 동의 저장 완료" onClose={() => setOpen(false)} primaryLabel="계속" onPrimary={next}><p>BE2 계약 상태를 다음 단계로 업데이트했어요. 이후 임차인의 안전 송금이 완료되면 escrow anchor가 연결됩니다.</p></ActionModal></Page>
 }
 
 function L05Signed({ next }: NavProps) {
@@ -742,27 +864,91 @@ function L05Signed({ next }: NavProps) {
 }
 
 function L06Home({ go }: NavProps) {
-  return <Page bottomNav><Hero title="안녕하세요, 김선생님" /><div className="home-hero"><span>이번 달 수익</span><strong>₩2,040,000</strong><p>받음 ₩2.04M · 예정 ₩680K</p></div><div className="quick-grid"><button>매물</button><button>월세</button><button>분쟁</button><button>리포트</button></div><SectionTitle right="전체">내 매물 (3)</SectionTitle><ListItem icon="망원" title="망원동 12-3 #302" desc="Sarah K · 잠김" action={krw(rent)} onClick={() => go('l07')} /><ListItem icon="연남" title="연남동 56 #501" desc="공실" action="모집중" /><ListItem icon="망원" title="망원동 12-3 #201" desc="Diego R · 미납 1일" action={krw(rent)} onClick={() => go('l08')} /><BottomSpace /></Page>
+  return (
+    <Page bottomNav>
+      <div className="home-head"><span>BlueSafe</span></div>
+      <Hero title="안녕하세요, 김선생님" />
+      <div className="landlord-summary">
+        <div className="income-card">
+          <span>이번 달 수익</span>
+          <strong>2,040,000원</strong>
+          <p>받음 204만원 · 예정 68만원</p>
+        </div>
+        <div className="rent-status-card">
+          <span>정산 예정</span>
+          <strong>1건</strong>
+          <p>내일 입금</p>
+        </div>
+        <div className="vacancy-card">
+          <span>공실</span>
+          <strong>1개</strong>
+        </div>
+        <div className="quick-grid"><button>매물</button><button>월세</button><button onClick={() => go('l11')}>정산</button><button onClick={() => go('l10')}>리포트</button></div>
+      </div>
+      <div className="home-tasks landlord-properties">
+        <SectionTitle right="전체">내 매물 (3)</SectionTitle>
+        <ListItem icon="망원" title="망원동 12-3 #302" desc="Sarah K · 보증금 잠김" action={krw(rent)} onClick={() => go('l07')} />
+        <ListItem icon="연남" title="연남동 56 #501" desc="공실 · 모집중" action="모집중" />
+        <ListItem icon="망원" title="망원동 12-3 #201" desc="Diego R · 미납 1일" action={krw(rent)} onClick={() => go('l08')} />
+      </div>
+      <BottomSpace />
+    </Page>
+  )
 }
 
 function L07Detail() {
-  return <Page><Hero title="망원동 12-3 #302" desc="Sarah Kim · 2026.06.01–2027.05.31" /><Card tone="blue"><span>LOCKED DEPOSIT</span><strong>{krw(deposit)}</strong><span>83일 거주 · 2027.05.31 만료</span></Card><SectionTitle>월세 내역</SectionTitle><ListItem icon="Aug" title="월세 정산" desc="2026.08.01" action={`+${krw(rent)}`} /><ListItem icon="Jul" title="월세 정산" desc="2026.07.01" action={`+${krw(rent)}`} /><ListItem icon="Jun" title="월세 정산" desc="2026.06.01" action={`+${krw(rent)}`} /><SectionTitle>임차인</SectionTitle><ListItem icon="SK" title="Sarah Kim" desc="USA · F-2 · 평판 SBT 인증" action="안전" /></Page>
+  return <Page><Hero title="망원동 12-3 #302" desc="Sarah Kim · 2026.06.01–2027.05.31" /><div className="property-summary"><div className="deposit-card"><span>잠긴 보증금</span><strong>{won(deposit)}</strong><p>멀티시그로 보관 중</p></div><div className="living-card"><span>거주</span><strong>83일차</strong></div></div><SectionTitle>월세 내역</SectionTitle><ListItem icon="Aug" title="월세 정산" desc="2026.08.01" action={`+${krw(rent)}`} /><ListItem icon="Jul" title="월세 정산" desc="2026.07.01" action={`+${krw(rent)}`} /><ListItem icon="Jun" title="월세 정산" desc="2026.06.01" action={`+${krw(rent)}`} /><SectionTitle>임차인</SectionTitle><ListItem icon="SK" title="Sarah Kim" desc="USA · F-2 · 평판 SBT 인증" action="안전" /></Page>
 }
 
 function L08LateRent({ next }: NavProps) {
   return <Page><Hero title={'미납이지만\n돈은 들어왔어요'} desc="먼저 보증금에서 우선 차감해 송금했어요" /><Card tone="yellow"><span>미납 임차인</span><strong>Diego Ramirez</strong><span>망원동 12-3 #201 · 1일 지연</span></Card><Card><Info label="월세 자동 차감 완료" value="₩680,000" strong /><Info label="잠금 잔액" value="₩14,320,000" /><Info label="입금 시각" value="오늘 09:01" /></Card><p className="notice">임차인이 7일 안에 갚으면 잠금 잔액이 원복돼요. 그동안 BlueSafe가 알림과 추심을 진행해요.</p><BottomCTA label="확인" secondary="연락하기" onClick={next} /></Page>
 }
 
-function L09IncomingDispute({ next }: NavProps) {
-  return <Page><Hero eyebrow="응답 필요" title={'임차인이\n이의 제기를 했어요'} desc="4일 안에 답하지 않으면 BlueSafe 패널이 판정해요" /><Card tone="yellow"><strong>대상 청구 · 8월 가스비</strong><span>₩31,000 · +12.5% vs avg</span></Card><Card tone="soft"><strong>임차인 주장</strong><span>“평소엔 25,000원 정도 나오는데 이번에 31,000원 나왔어요. 누수 가능성이 있어요.”</span></Card><SectionTitle>어떻게 할까요?</SectionTitle><ListItem icon={<CheckIcon />} title="인정하고 차액 환불" desc="6,000원이 즉시 임차인에게" /><ListItem icon={<ReceiptIcon />} title="근거 제출하고 반박" desc="검침지·계약서 등 첨부" /><ListItem icon={<ShieldIcon />} title="BlueSafe 패널에 위임" desc="평균 4.2일 소요" /><BottomCTA label="인정하고 환불" onClick={next} /></Page>
+function L09IncomingDispute({ next, actions, busy, error }: NavProps) {
+  const [open, setOpen] = useState(false)
+  const accept = async () => {
+    try {
+      await actions.landlordAcceptDispute()
+      setOpen(true)
+    } catch {
+      return
+    }
+  }
+  return <Page><Hero eyebrow="응답 필요" title={'임차인이\n이의 제기를 했어요'} desc="4일 안에 답하지 않으면 BlueSafe 패널이 판정해요" /><Card tone="yellow"><strong>대상 청구 · 8월 가스비</strong><span>₩31,000 · +12.5% vs avg</span></Card><Card tone="soft"><strong>임차인 주장</strong><span>“평소엔 25,000원 정도 나오는데 이번에 31,000원 나왔어요. 누수 가능성이 있어요.”</span></Card><SectionTitle>어떻게 할까요?</SectionTitle><ListItem icon={<CheckIcon />} title="인정하고 차액 환불" desc="6,000원이 즉시 임차인에게" /><ListItem icon={<ReceiptIcon />} title="근거 제출하고 반박" desc="검침지·계약서 등 첨부" /><ListItem icon={<ShieldIcon />} title="BlueSafe 패널에 위임" desc="평균 4.2일 소요" /><BackendInline error={error} /><BottomCTA label={busy ? '환불 기록 중' : '인정하고 환불'} onClick={accept} /><ActionModal open={open} title="환불 인정 완료" onClose={() => setOpen(false)} primaryLabel="계속" onPrimary={next}><p>BE2 dispute decision을 기록했어요. 실제 분쟁 ID가 있을 때는 해당 케이스에 판정이 연결됩니다.</p></ActionModal></Page>
 }
 
 function L10Earnings({ next }: NavProps) {
-  return <Page bottomNav><Hero title="수익 리포트" desc="2026 · YTD" /><div className="report-card"><span>YTD INCOME</span><strong>₩16,320,000</strong><p>+8.2% YoY</p></div><div className="month-bars">{'JFMAMJJASOND'.split('').map((m, i) => <span key={`${m}-${i}`}>{m}</span>)}</div><SectionTitle>매물별</SectionTitle><ListItem icon={<HomeIcon />} title="망원동 12-3 #302" desc="Sarah Kim · 8mo" action="₩5,440,000" /><ListItem icon={<HomeIcon />} title="망원동 12-3 #201" desc="Diego Ramirez · 8mo" action="₩5,440,000" /><ListItem icon={<HomeIcon />} title="연남동 56 #501" desc="비어있음 4개월" action="₩5,440,000" /><Card tone="blue"><strong>종합소득세 신고용 자료</strong><span>내려받기 →</span></Card><BottomCTA label="정산 화면 보기" onClick={next} /></Page>
+  const bars = [42, 48, 52, 58, 64, 72, 78, 86, 74, 68, 61, 55]
+  return (
+    <Page bottomNav>
+      <Hero title="수익 리포트" desc="2026 · YTD" />
+      <div className="earnings-summary">
+        <div className="earnings-total"><span>누적 수익</span><strong>16,320,000원</strong><p>작년보다 +8.2%</p></div>
+        <div className="earnings-mini"><span>월평균</span><strong>204만원</strong></div>
+        <div className="earnings-mini"><span>예정</span><strong>68만원</strong></div>
+      </div>
+      <div className="earnings-chart">{bars.map((height, i) => <span style={{ height }} key={i}><b>{'JFMAMJJASOND'[i]}</b></span>)}</div>
+      <SectionTitle>매물별</SectionTitle>
+      <ListItem icon={<HomeIcon />} title="망원동 12-3 #302" desc="Sarah Kim · 8mo" action="₩5,440,000" />
+      <ListItem icon={<HomeIcon />} title="망원동 12-3 #201" desc="Diego Ramirez · 8mo" action="₩5,440,000" />
+      <ListItem icon={<HomeIcon />} title="연남동 56 #501" desc="비어있음 4개월" action="₩5,440,000" />
+      <Card tone="blue"><strong>종합소득세 신고용 자료</strong><span>내려받기 →</span></Card>
+      <BottomCTA label="정산 화면 보기" onClick={next} />
+    </Page>
+  )
 }
 
-function L11DepositRelease({ next }: NavProps) {
-  return <Page><Hero eyebrow="응답 필요" title={'퇴실 확인 +\n보증금 정산'} desc="응답 없으면 7일 후 자동 반환돼요" /><Card tone="soft"><Info label="잠긴 보증금" value={krw(deposit)} strong /></Card><SectionTitle>차감 항목</SectionTitle><ListItem icon={<ReceiptIcon />} title="청소 (전문 업체)" desc="영수증 첨부" action="−₩50,000" /><ListItem icon={<ReceiptIcon />} title="벽지 손상" desc="사진 2장" action="−₩0" /><ListItem icon={<ReceiptIcon />} title="가전 분실" desc="없음" action="−₩0" /><Card><Info label="임차인 환불액" value="₩14,950,000" strong /><Info label="내가 받는 차감금" value="₩50,000" /></Card><BottomCTA label="동의하고 정산" secondary="거부" onClick={next} /></Page>
+function L11DepositRelease({ next, actions, busy, error }: NavProps) {
+  const [open, setOpen] = useState(false)
+  const approve = async () => {
+    try {
+      await actions.landlordApproveSettlement()
+      setOpen(true)
+    } catch {
+      return
+    }
+  }
+  return <Page><Hero eyebrow="응답 필요" title={'퇴실 확인 +\n보증금 정산'} desc="응답 없으면 7일 후 자동 반환돼요" /><Card tone="soft"><Info label="잠긴 보증금" value={krw(deposit)} strong /></Card><SectionTitle>차감 항목</SectionTitle><ListItem icon={<ReceiptIcon />} title="청소 (전문 업체)" desc="영수증 첨부" action="−₩50,000" /><ListItem icon={<ReceiptIcon />} title="벽지 손상" desc="사진 2장" action="−₩0" /><ListItem icon={<ReceiptIcon />} title="가전 분실" desc="없음" action="−₩0" /><Card><Info label="임차인 환불액" value="₩14,950,000" strong /><Info label="내가 받는 차감금" value="₩50,000" /></Card><BackendInline error={error} /><BottomCTA label={busy ? '정산 승인 중' : '동의하고 정산'} secondary="거부" onClick={approve} /><ActionModal open={open} title="정산 승인 완료" onClose={() => setOpen(false)} primaryLabel="계속" onPrimary={next}><p>BE2 settlement 상태를 confirmed로 업데이트했어요. 기존 settlement가 없으면 프론트 로컬 상태로 승인 결과를 보관합니다.</p></ActionModal></Page>
 }
 
 function L12Activity() {
@@ -985,6 +1171,62 @@ function shortHash(value: string) {
   return `${value.slice(0, 6)}…${value.slice(-4)}`
 }
 
+function demoLeaseDates() {
+  const now = new Date()
+  const startsAt = addDays(now, -83)
+  const endsAt = addDays(now, 282)
+  const finishAfter = addDays(endsAt, 7)
+  const cancelAfter = addDays(endsAt, 30)
+  return { startsAt, endsAt, finishAfter, cancelAfter }
+}
+
+function getLeaseMetrics(app: AppModel) {
+  const demo = demoLeaseDates()
+  const startsAt = parseDate(app.contract?.startsAt ?? app.xrplContract?.startsAt) ?? demo.startsAt
+  const endsAt = parseDate(app.contract?.endsAt ?? app.xrplContract?.endsAt) ?? demo.endsAt
+  const finishAfter = addDays(endsAt, 7)
+  const now = new Date()
+  const totalMs = Math.max(1, endsAt.getTime() - startsAt.getTime())
+  const elapsedMs = clamp(now.getTime() - startsAt.getTime(), 0, totalMs)
+  const daysLeft = Math.max(0, Math.ceil((endsAt.getTime() - now.getTime()) / dayMs))
+  const livedDays = Math.max(0, Math.floor((now.getTime() - startsAt.getTime()) / dayMs) + 1)
+  const progress = Math.round((elapsedMs / totalMs) * 100)
+  const returnLeft = splitDuration(finishAfter.getTime() - now.getTime())
+  return { startsAt, endsAt, finishAfter, daysLeft, livedDays, progress, returnLeft }
+}
+
+const dayMs = 86_400_000
+
+function parseDate(value?: string) {
+  if (!value) return undefined
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? undefined : date
+}
+
+function addDays(date: Date, days: number) {
+  return new Date(date.getTime() + days * dayMs)
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
+}
+
+function splitDuration(ms: number) {
+  const totalMs = Math.max(0, ms)
+  const days = Math.floor(totalMs / dayMs)
+  const hours = Math.floor((totalMs % dayMs) / 3_600_000)
+  const minutes = Math.floor((totalMs % 3_600_000) / 60_000)
+  return { totalMs, days, hours, minutes }
+}
+
+function pad2(value: number) {
+  return String(value).padStart(2, '0')
+}
+
+function formatDate(date: Date) {
+  return `${date.getFullYear()}.${pad2(date.getMonth() + 1)}.${pad2(date.getDate())}`
+}
+
 function getReputationStage(score: number) {
   return reputationStages.find((stage) => score >= stage.min && score <= stage.max) ?? reputationStages[reputationStages.length - 1]
 }
@@ -996,7 +1238,7 @@ function getNextReputationStage(score: number) {
 }
 
 function isChromeLessScreen(id: ScreenId) {
-  return id === 't02' || id === 't09' || id === 'l06'
+  return id === 'role' || id === 't02' || id === 't09' || id === 'l06'
 }
 
 function ChevronLeftIcon() { return <svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></svg> }

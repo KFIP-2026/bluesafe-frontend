@@ -150,6 +150,21 @@ export const bluesafeApi = {
     )
   },
 
+  updateSettlementStatus(
+    settlementId: string,
+    input: {
+      status?: 'accrued' | 'confirmed' | 'archived'
+      amountMinor?: number
+      currencyCode?: string
+      batchId?: string
+    },
+  ) {
+    return request<SettlementRecord>(be2Url, `/v1/settlements/${settlementId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    })
+  },
+
   uploadEvidence(input: {
     contractId: string
     category: 'contract_pdf' | 'utility_bill' | 'photo' | 'receipt' | 'other'
