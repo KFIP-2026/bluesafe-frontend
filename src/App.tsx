@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, type ChangeEvent } from 'react'
 import './App.css'
+import { backendConfig, bluesafeApi, type BackendContract, type DisputeCase, type EvidenceFile } from './api/bluesafe'
 import reputationMascot from './assets/reputation-mascot.png'
 
 type ScreenId =
@@ -19,11 +20,61 @@ type ScreenDef = {
 type NavProps = {
   next: () => void
   go: (id: ScreenId) => void
+  app: AppModel
+  actions: AppActions
+  busy: boolean
+  error: string
+}
+
+type AppModel = {
+  tenantId: string
+  landlordId: string
+  tenantAddress: string
+  landlordAddress: string
+  contract?: BackendContract
+  xrplContract?: BackendContract
+  evidence?: EvidenceFile
+  dispute?: DisputeCase
+  backendEvents: string[]
+}
+
+type AppActions = {
+  createDraftContract: () => Promise<BackendContract>
+  lockDeposit: () => Promise<void>
+  uploadEvidence: (input: {
+    category: 'contract_pdf' | 'utility_bill' | 'photo' | 'receipt' | 'other'
+    fileName: string
+    file?: Blob
+    content?: string
+  }) => Promise<EvidenceFile>
+  createUtilityDispute: (file?: File) => Promise<void>
+  acceptDispute: () => Promise<void>
 }
 
 const deposit = 15_000_000
 const rent = 680_000
 const maintenance = 70_000
+const reputationScore = 97
+
+type ReputationStage = {
+  key: string
+  emoji: string
+  title: string
+  english: string
+  min: number
+  max: number
+  tone: string
+}
+
+const reputationStages: ReputationStage[] = [
+  { key: 'ocean', emoji: '🌊', title: '바다', english: 'Ocean', min: 99, max: 100, tone: 'ocean' },
+  { key: 'spring', emoji: '💧', title: '샘', english: 'Spring', min: 80, max: 98, tone: 'spring' },
+  { key: 'stream', emoji: '🏞️', title: '시내', english: 'Stream', min: 60, max: 79, tone: 'stream' },
+  { key: 'drop', emoji: '💦', title: '한 방울', english: 'Drop', min: 37, max: 59, tone: 'drop' },
+  { key: 'dew', emoji: '🫧', title: '이슬', english: 'Dewdrop', min: 20, max: 36, tone: 'dew' },
+  { key: 'drying', emoji: '🏜️', title: '마르는 중', english: 'Drying', min: 5, max: 19, tone: 'drying' },
+  { key: 'cracked', emoji: '🪨', title: '갈라짐', english: 'Cracked', min: 0, max: 4, tone: 'cracked' },
+]
 
 const tenantScreens: ScreenDef[] = [
   { id: 't01', label: '시작', group: '임차인', component: T01Entry },
@@ -67,6 +118,15 @@ const allScreens = [...tenantScreens, ...landlordScreens]
 
 function App() {
   const [screenId, setScreenId] = useState<ScreenId>('t01')
+  const [app, setApp] = useState<AppModel>({
+    tenantId: 'tenant_sarah_kim',
+    landlordId: 'landlord_kim',
+    tenantAddress: 'rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh',
+    landlordAddress: 'rDTXLQ7ZKZVKz33zJbHjgVShjsBnqMBhmN',
+    backendEvents: ['프론트 데모 상태로 시작했어요'],
+  })
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
   const currentIndex = allScreens.findIndex((screen) => screen.id === screenId)
   const current = allScreens[currentIndex]
   const CurrentScreen = current.component
@@ -75,6 +135,149 @@ function App() {
   const go = (id: ScreenId) => setScreenId(id)
   const next = () => setScreenId(allScreens[Math.min(currentIndex + 1, allScreens.length - 1)].id)
   const back = () => setScreenId(allScreens[Math.max(currentIndex - 1, 0)].id)
+  const pushEvent = (message: string) => {
+    setApp((prev) => ({ ...prev, backendEvents: [message, ...prev.backendEvents].slice(0, 5) }))
+  }
+  const run = async <T,>(label: string, task: () => Promise<T>) => {
+    setBusy(true)
+    setError('')
+    try {
+      const result = await task()
+      pushEvent(label)
+      return result
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '요청 처리에 실패했어요'
+      setError(message)
+      pushEvent(`${label} 실패: ${message}`)
+      throw err
+    } finally {
+      setBusy(false)
+    }
+  }
+  const actions: AppActions = {
+    createDraftContract: async () => {
+      if (app.contract) return app.contract
+      return run('BE2 계약 draft 생성', async () => {
+        const contract = backendConfig.hasBe2
+          ? await bluesafeApi.createOperationalContract({ tenantId: app.tenantId, landlordId: app.landlordId })
+          : {
+              id: 'ctr_demo_001',
+              status: 'draft' as const,
+              tenantId: app.tenantId,
+              landlordId: app.landlordId,
+            }
+        setApp((prev) => ({ ...prev, contract }))
+        return contract
+      })
+    },
+    lockDeposit: async () => {
+      await run('BE1 XRPL 에스크로 락업 + BE2 앵커 연결', async () => {
+        const contract = app.contract ?? await actions.createDraftContract()
+        if (backendConfig.hasBe2 && contract.status === 'draft') {
+          await bluesafeApi.updateOperationalContractStatus(contract.id, 'escrow_pending')
+        }
+
+        const xrplContract = backendConfig.hasBe1
+          ? await bluesafeApi.createXrplContract({
+              tenantAddress: app.tenantAddress,
+              landlordAddress: app.landlordAddress,
+              depositAmount: '17647000000',
+              stakeAmount: '1000000',
+              startsAt: '2026-06-01T00:00:00.000Z',
+              endsAt: '2027-05-31T00:00:00.000Z',
+              finishAfter: '2027-06-07T00:00:00.000Z',
+              cancelAfter: '2027-06-30T00:00:00.000Z',
+              tenantPii: 'Sarah Kim / USA / F-2',
+              landlordPii: 'Kim / verified landlord',
+              tenantEmail: 'sarah@example.com',
+            })
+          : {
+              id: 'be1_demo_001',
+              status: 'active' as const,
+              contractAccountAddress: 'rBlueSafeDemoEscrowAccount1234567',
+              depositAmount: '17647000000',
+              depositEscrowTxHash: 'F2A8B7C91D3DEMOXRPLESCROWTXHASH',
+              depositEscrowSequence: 824,
+              signerListTxHash: 'A91D3DEMO2OF3MULTISIGTXHASH',
+            }
+
+        const txHash = xrplContract.depositEscrowTxHash ?? 'F2A8B7C91D3DEMOXRPLESCROWTXHASH'
+        const anchored = backendConfig.hasBe2
+          ? await bluesafeApi.anchorEscrow(contract.id, txHash)
+          : { ...contract, status: 'escrow_validated' as const, depositEscrowTxHash: txHash }
+
+        if (backendConfig.hasBe2) {
+          await bluesafeApi.trackTx({
+            txHash,
+            txType: 'EscrowCreate',
+            account: xrplContract.contractAccountAddress ?? app.tenantAddress,
+          }).catch(() => undefined)
+        }
+
+        setApp((prev) => ({ ...prev, contract: anchored, xrplContract }))
+      })
+    },
+    uploadEvidence: async (input) => {
+      return run('BE2 증빙 업로드', async () => {
+        const contract = app.contract ?? await actions.createDraftContract()
+        const evidence = backendConfig.hasBe2
+          ? await bluesafeApi.uploadEvidence({
+              contractId: contract.id,
+              category: input.category,
+              uploaderId: app.tenantId,
+              fileName: input.fileName,
+              file: input.file,
+              content: input.content,
+              retentionDays: 365,
+            })
+          : {
+              id: `ev_demo_${Date.now()}`,
+              contractId: contract.id,
+              category: input.category,
+              cid: `bafy-demo-${input.category}`,
+              version: 1,
+            }
+        setApp((prev) => ({ ...prev, evidence }))
+        return evidence
+      })
+    },
+    createUtilityDispute: async (file?: File) => {
+      await run('BE2 증빙 업로드 + 분쟁 접수', async () => {
+        const contract = app.contract ?? await actions.createDraftContract()
+        const evidence = await actions.uploadEvidence({
+          category: 'utility_bill',
+          fileName: file?.name ?? 'august-gas-bill.txt',
+          file,
+          content: 'August gas bill 31,000 KRW, average 25,000 KRW, suspected leak.',
+        })
+        const dispute = backendConfig.hasBe2
+          ? await bluesafeApi.createDispute({
+              contractId: contract.id,
+              raisedBy: 'tenant',
+              reasonCode: 'UTILITY_OVER_AVERAGE',
+              evidenceIds: [evidence.id],
+            })
+          : {
+              id: 'dsp_demo_001',
+              contractId: contract.id,
+              raisedBy: 'tenant' as const,
+              reasonCode: 'UTILITY_OVER_AVERAGE',
+              status: 'under_review' as const,
+            }
+        setApp((prev) => ({ ...prev, evidence, dispute }))
+      })
+    },
+    acceptDispute: async () => {
+      const currentDispute = app.dispute
+      if (!currentDispute) return
+      await run('BE2 분쟁 판정 기록', async () => {
+        const dispute = backendConfig.hasBe2
+          ? await bluesafeApi.decideDispute(currentDispute.id, 'partial_manual', '평년 대비 초과분 6,000원 환불')
+          : { ...currentDispute, status: 'decided' as const, decision: 'partial_manual' }
+        setApp((prev) => ({ ...prev, dispute }))
+      })
+    },
+  }
 
   return (
     <main className="app-shell">
@@ -82,7 +285,7 @@ function App() {
         <StatusBar light={screenId === 't01'} />
         <div className={screenId === 't01' ? 'viewport is-entry' : 'viewport'}>
           {showTopBar && <TopBar title={current.label} onBack={back} />}
-          <CurrentScreen key={screenId} next={next} go={go} />
+          <CurrentScreen key={screenId} next={next} go={go} app={app} actions={actions} busy={busy} error={error} />
         </div>
         {current.tab === 'tenant' && <TenantNav active={screenId} go={go} />}
         {current.tab === 'landlord' && <LandlordNav active={screenId} go={go} />}
@@ -153,6 +356,7 @@ function T02Onboarding({ next }: NavProps) {
 }
 
 function T03Auth({ next }: NavProps) {
+  const [open, setOpen] = useState(false)
   return (
     <Page>
       <Hero title={'토스로\n간편하게 인증하기'} desc="본인 확인을 위해 한 번만 거치면 돼요" />
@@ -162,39 +366,80 @@ function T03Auth({ next }: NavProps) {
       <ListItem icon={<CheckIcon />} title="외국인등록번호" desc="KYC 1단계 통과" />
       <ListItem icon={<CheckIcon />} title="본인 명의 계좌" desc="보증금 입출금 검증" />
       <p className="notice">토스 약관에 따라 안전하게 처리돼요. BlueSafe 서버에는 암호화돼서 보관돼요.</p>
-      <BottomCTA label="토스로 인증하기" secondary="약관 전체 보기" onClick={next} />
+      <BottomCTA label="토스로 인증하기" secondary="약관 전체 보기" onClick={() => setOpen(true)} />
+      <ActionModal open={open} title="토스 인증 완료" onClose={() => setOpen(false)} primaryLabel="다음" onPrimary={next}>
+        <p>본인 확인 토큰을 받았다고 가정하고 다음 단계로 이동해요. 실제 연동 시에는 BE2 인증 헤더에 사용할 토큰을 저장하면 돼요.</p>
+        <Info label="role" value="tenant" />
+        <Info label="auth" value="ready" />
+      </ActionModal>
     </Page>
   )
 }
 
 function T04Kyc({ next }: NavProps) {
+  const [fileName, setFileName] = useState('')
+  const [open, setOpen] = useState(false)
+  const onFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    setFileName(file.name)
+    setOpen(true)
+  }
   return (
     <Page>
       <StepperHeader current={1} />
       <Hero title={'외국인 등록증을\n업로드해요'} />
       <div className="camera-card"><div>여기에 카드를 맞춰요</div></div>
+      <input className="hidden-input" id="arc-file" type="file" accept="image/png,image/jpeg,image/webp,application/pdf" onChange={onFile} />
       <SectionTitle>확인 항목</SectionTitle>
       <Checklist items={['카드 전체가 프레임에 들어왔는지', '글자가 흐릿하지 않은지', '뒷면 칩이 보이지 않는지 (선택)']} />
-      <BottomCTA label="촬영하기" onClick={next} />
+      <BottomCTA label={fileName || '촬영하기'} onClick={() => document.getElementById('arc-file')?.click()} />
+      <ActionModal open={open} title="등록증 파일 확인" onClose={() => setOpen(false)} primaryLabel="다음" onPrimary={next}>
+        <p>{fileName} 파일을 확인했어요. 실제 OCR/KYC API가 생기면 여기서 업로드 후 검증 결과를 받아오면 됩니다.</p>
+      </ActionModal>
     </Page>
   )
 }
 
 function T05Invite({ next }: NavProps) {
+  const [open, setOpen] = useState(false)
+  const inviteLink = 'bluesafe.app/r/8KQ-91D-LM2'
+  const copyInvite = async () => {
+    await navigator.clipboard?.writeText(inviteLink).catch(() => undefined)
+    setOpen(true)
+  }
   return (
     <Page>
       <Hero title={'집주인을\n초대해요'} desc="카카오·문자 어디로든 보낼 수 있어요" />
-      <Card tone="soft"><div className="copy-link"><span>초대 링크</span><strong>bluesafe.app/r/8KQ-91D-LM2</strong><button>복사</button></div><div className="share-row"><button>카카오톡</button><button>문자</button></div></Card>
+      <Card tone="soft"><div className="copy-link"><span>초대 링크</span><strong>{inviteLink}</strong><button onClick={copyInvite}>복사</button></div><div className="share-row"><button onClick={() => setOpen(true)}>카카오톡</button><button onClick={() => setOpen(true)}>문자</button></div></Card>
       <SectionTitle>집주인이 할 일</SectionTitle>
       <ListItem icon="1" title="링크 클릭 → 토스 인증" desc="같은 BlueSafe 미니앱이 열려요" />
       <ListItem icon="2" title="계약서 확인 + 서명" desc="평균 4분" />
       <ListItem icon="3" title="보증금 받기 계좌 등록" desc="본인 명의만 가능" />
       <BottomCTA label="카카오톡으로 보내기" secondary="나중에" onClick={next} />
+      <ActionModal open={open} title="초대 링크 준비 완료" onClose={() => setOpen(false)} primaryLabel="계속" onPrimary={next}>
+        <p>집주인이 이 링크로 들어오면 BE2 계약 draft에 landlord 인증 상태를 연결하는 흐름으로 이어지면 돼요.</p>
+        <Info label="invite" value={inviteLink} mono />
+      </ActionModal>
     </Page>
   )
 }
 
-function T06Contract({ next }: NavProps) {
+function T06Contract({ next, actions, busy, error }: NavProps) {
+  const [open, setOpen] = useState(false)
+  const signContract = async () => {
+    try {
+      await actions.createDraftContract()
+      await actions.uploadEvidence({
+        category: 'contract_pdf',
+        fileName: 'bluesafe-trust-lease.txt',
+        content: 'BLUESAFE TRUST LEASE v1 signed by tenant, landlord, and BlueSafe.',
+      })
+      setOpen(true)
+    } catch {
+      return
+    }
+  }
   return (
     <Page>
       <Hero eyebrow="검토 중" title="3자 안심 계약서" desc="집주인·BlueSafe·임차인 모두가 서명해요" />
@@ -211,12 +456,16 @@ function T06Contract({ next }: NavProps) {
       <ListItem icon="§2" title="퇴실 후 7일 이내 자동 반환돼요" desc="집주인 응답이 없어도 풀려요" />
       <ListItem icon="§3" title="분쟁 시 BlueSafe 패널이 판정해요" desc="평균 처리 4.2일" />
       <label className="agree-row"><input type="checkbox" defaultChecked /> 전체 약관에 동의해요</label>
-      <BottomCTA label="서명하고 계속" onClick={next} />
+      <BackendInline error={error} />
+      <BottomCTA label={busy ? '계약 저장 중' : '서명하고 계속'} onClick={signContract} />
+      <ActionModal open={open} title="계약서 증빙 저장" onClose={() => setOpen(false)} primaryLabel="계속" onPrimary={next}>
+        <p>계약 draft를 만들고 계약서 증빙을 BE2 Evidence Vault에 연결하는 흐름이에요.</p>
+      </ActionModal>
     </Page>
   )
 }
 
-function T07Pay({ next }: NavProps) {
+function T07Pay({ next, actions, busy, error }: NavProps) {
   return (
     <Page>
       <Hero eyebrow="XRPL" title="안전 송금 금액" />
@@ -224,12 +473,16 @@ function T07Pay({ next }: NavProps) {
       <SectionTitle>결제 수단</SectionTitle>
       <ListItem icon={<WalletIcon />} title="토스뱅크 입출금" desc="••• 8821" action="기본" />
       <ListItem icon={<PlusIcon />} title="다른 계좌 추가" />
-      <BottomCTA label="15,000,000원 안전 송금" onClick={next} />
+      <BackendInline error={error} />
+      <BottomCTA label={busy ? '에스크로 생성 중' : '15,000,000원 안전 송금'} onClick={async () => { try { await actions.lockDeposit(); next() } catch { return } }} />
     </Page>
   )
 }
 
-function T08Receipt({ next }: NavProps) {
+function T08Receipt({ next, app }: NavProps) {
+  const txHash = app.xrplContract?.depositEscrowTxHash ?? app.contract?.depositEscrowTxHash ?? 'F2A8…91D3'
+  const account = app.xrplContract?.contractAccountAddress ?? 'XRPL escrow account'
+  const [open, setOpen] = useState(false)
   return (
     <Page>
       <Hero title="보증금이 잠겼어요" desc="2027년 5월 31일까지 안전하게 보관돼요" />
@@ -238,18 +491,25 @@ function T08Receipt({ next }: NavProps) {
         <Info label="계약 기간" value="2026.06.01–2027.05.31" />
         <Info label="집" value="망원동 12-3, 302호" />
         <Info label="집주인" value="김 ○ ○" />
-        <Info label="XRPL TX" value="F2A8…91D3" mono />
+        <Info label="XRPL TX" value={shortHash(txHash)} mono />
+        <Info label="Escrow Account" value={account} mono />
       </Card>
-      <Card tone="blue"><strong>온체인 영수증</strong><span>익스플로러로 보기 →</span></Card>
+      <button className="card blue action-card" onClick={() => setOpen(true)}><strong>온체인 영수증</strong><span>익스플로러로 보기 →</span></button>
       <BottomCTA label="홈으로" secondary="공유" onClick={next} />
+      <ActionModal open={open} title="XRPL 트랜잭션" onClose={() => setOpen(false)} primaryLabel="닫기" onPrimary={() => setOpen(false)}>
+        <p>실서비스에서는 이 값으로 XRPL Explorer를 열면 돼요.</p>
+        <Info label="tx" value={txHash} mono />
+        <Info label="account" value={account} mono />
+      </ActionModal>
     </Page>
   )
 }
 
-function T09Home({ go }: NavProps) {
+function T09Home({ go, app, error }: NavProps) {
   return (
     <Page bottomNav>
       <div className="home-head"><span>BlueSafe</span></div>
+      <BackendStatus app={app} error={error} />
       <div className="home-summary">
         <div className="deposit-card">
           <span>현재 보증금</span>
@@ -267,11 +527,11 @@ function T09Home({ go }: NavProps) {
           <span>거주</span>
           <strong>83일차</strong>
         </div>
-        <div className="quick-grid"><button>리포트</button><button onClick={() => go('t13')}>공과금</button><button onClick={() => go('t14')}>이의제기</button><button>계약서</button></div>
+        <div className="quick-grid"><button>리포트</button><button onClick={() => go('t13')}>공과금</button><button onClick={() => go('t10')}>반환</button><button>계약서</button></div>
       </div>
       <div className="home-tasks">
         <SectionTitle right="전체">오늘 할 일</SectionTitle>
-        <ListItem icon={<AlertIcon />} title="8월 가스비가 평소보다 12% 높아요" desc="이의제기 가능" onClick={() => go('t13')} />
+        <ListItem icon={<AlertIcon />} title="8월 가스비가 평소보다 12% 높아요" desc="확인 필요" onClick={() => go('t13')} />
         <ListItem icon={<img src={reputationMascot} alt="" className="mini-asset" />} title="평판 기록이 시작됐어요" desc="한 방울 → 시내, 거주 60일 달성" />
       </div>
       <div className="screen-fill" />
@@ -310,12 +570,31 @@ function T11Report() {
 }
 
 function T12Reputation({ next }: NavProps) {
+  const current = getReputationStage(reputationScore)
+  const nextStage = getNextReputationStage(reputationScore)
+  const progress = Math.max(0, Math.min(100, reputationScore))
+
   return (
     <Page>
-      <Hero title="평판이 차올라요" desc="꾸준히 살수록 차올라요. 다음 집에서 써먹을 수 있어요." />
-      <div className="reputation-card"><img src={reputationMascot} alt="" className="reputation-mascot" /><small>SPRING</small><strong>지금은 샘</strong><span>97점 · 다음 바다까지 +2</span></div>
+      <Hero title="평판이 차올라요" desc="꾸준히 살수록 차올라요. 다음 집에서 쓸 수 있어요." />
+      <div className={`reputation-card stage-${current.tone}`}>
+        <div className="stage-emoji" aria-hidden="true">{current.emoji}</div>
+        <img src={reputationMascot} alt="" className="reputation-mascot" />
+        <small>{current.english.toUpperCase()}</small>
+        <strong>지금은 {current.title}</strong>
+        <span>{reputationScore}점 · {nextStage ? `다음 ${nextStage.title}까지 +${nextStage.min - reputationScore}` : '최고 단계예요'}</span>
+        <div className="stage-meter"><i style={{ width: `${progress}%` }} /></div>
+      </div>
       <SectionTitle>차오르는 단계</SectionTitle>
-      <InfoList rows={[['바다 Ocean', '99–100'], ['샘 Spring 지금', '80–98'], ['시내 Stream', '60–79'], ['한 방울 Drop', '36.5–59'], ['이슬 Dewdrop', '20–36.4'], ['마르는 Drying', '5–19'], ['갈라진 Cracked', '0–4']]} />
+      <div className="stage-list">
+        {reputationStages.map((stage) => (
+          <div className={stage.key === current.key ? 'active' : ''} key={stage.key}>
+            <span>{stage.emoji}</span>
+            <strong>{stage.title}<small>{stage.english}</small></strong>
+            <em>{stage.min}–{stage.max}</em>
+          </div>
+        ))}
+      </div>
       <BottomCTA label="집 구하기 (오픈하우스)" secondary="공유" onClick={next} />
     </Page>
   )
@@ -331,13 +610,19 @@ function T13Bills({ go }: NavProps) {
       <Bill title="가스" value={31_000} diff="+12.5%" warn />
       <Bill title="수도" value={18_200} diff="−2.0%" />
       <Bill title="인터넷" value={30_000} diff="0%" />
-      <Card tone="yellow"><strong>가스비가 평소보다 12% 높아요</strong><span>근거 자료를 첨부해 이의제기 할 수 있어요.</span></Card>
-      <BottomCTA label="이의 제기하기" secondary="나중에" onClick={() => go('t14')} />
+      <Card tone="yellow"><strong>가스비가 평소보다 12% 높아요</strong><span>평년 데이터와 비교한 참고 정보예요.</span></Card>
+      <BottomCTA label="확인" secondary="나중에" onClick={() => go('t09')} />
     </Page>
   )
 }
 
-function T14Dispute({ next }: NavProps) {
+function T14Dispute({ next, actions, busy, error }: NavProps) {
+  const [file, setFile] = useState<File>()
+  const onFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = event.target.files?.[0]
+    if (!selected) return
+    setFile(selected)
+  }
   return (
     <Page>
       <Hero title={'어떤 부분이\n이상한가요?'} />
@@ -345,31 +630,36 @@ function T14Dispute({ next }: NavProps) {
       <ListItem icon={<AlertIcon />} title="8월 가스비" desc="₩31,000 · +12.5%" action="대상" />
       <SectionTitle>이유</SectionTitle>
       <div className="chip-wrap"><span className="chip selected">평년보다 너무 높아요</span><span className="chip">계량기 수치가 달라요</span><span className="chip">공용부 누수 의심</span><span className="chip">직접 입력</span></div>
-      <SectionTitle>근거 사진</SectionTitle><div className="photo-grid"><div /><div /><button>+</button></div>
+      <SectionTitle>근거 사진</SectionTitle>
+      <input className="hidden-input" id="utility-evidence-file" type="file" accept="image/png,image/jpeg,application/pdf" onChange={onFile} />
+      <div className="photo-grid evidence-grid"><div>{file ? file.name : ''}</div><div /><button onClick={() => document.getElementById('utility-evidence-file')?.click()}>+</button></div>
       <SectionTitle>한 줄 설명</SectionTitle><div className="note-box">평소엔 25,000원 정도 나오는데 이번에 31,000원 나왔어요. 누수 가능성이 있어요.</div>
-      <BottomCTA label="이의 제기 보내기" onClick={next} />
+      <BackendInline error={error} />
+      <BottomCTA label={busy ? '분쟁 접수 중' : '이의 제기 보내기'} onClick={async () => { try { await actions.createUtilityDispute(file); next() } catch { return } }} />
     </Page>
   )
 }
 
-function T15DisputeStatus() {
+function T15DisputeStatus({ app }: NavProps) {
   return (
     <Page>
       <Hero eyebrow="진행 중" title={'분쟁이\n진행 중이에요'} desc="평균 4.2일 안에 결과가 나와요" />
       <StepperHeader current={1} />
+      <BackendInline label={`BE2 dispute: ${app.dispute?.id ?? 'not submitted yet'} · ${app.dispute?.status ?? 'local'}`} />
       <Timeline items={['이의 제기 접수|09.04 · 14:32', '집주인에게 알림|09.04 · 14:32', 'BlueSafe 패널 검토 중|진행 중', '판정 + 환불|예상 09.08']} />
       <Card tone="blue"><strong>걱정하지 마세요</strong><span>결과가 나올 때까지 차액(6,000원)이 자동으로 보류돼요. 부담 없이 기다려요.</span></Card>
     </Page>
   )
 }
 
-function T16DisputeResult({ next }: NavProps) {
+function T16DisputeResult({ next, actions, busy, error }: NavProps) {
   return (
     <Page>
       <Hero title={'이의 제기가\n인정됐어요'} desc="환불이 토스 계좌에 들어왔어요" />
       <Card><Info label="환불 금액" value={krw(6_000)} strong /><Info label="판정" value="임차인 인정" /><Info label="근거" value="계량기 수치 + 평년 비교" /><Info label="입금 시점" value="오늘 16:18" /></Card>
       <Card tone="soft"><span>“계량기 수치를 비교한 결과 평년 대비 12% 초과 사용이 확인되지 않았어요. 차액 6,000원을 임차인에게 돌려드려요.” — BlueSafe Panel</span></Card>
-      <BottomCTA label="확인" onClick={next} />
+      <BackendInline error={error} />
+      <BottomCTA label={busy ? '판정 기록 중' : '확인'} onClick={async () => { try { await actions.acceptDispute(); next() } catch { return } }} />
     </Page>
   )
 }
@@ -603,6 +893,65 @@ function ActivityRows({ rows }: { rows: string[][] }) {
   return <>{rows.map(([section, date, title, desc, value], i) => <div key={`${date}-${title}-${i}`}>{section && <SectionTitle>{section}</SectionTitle>}<div className="activity-row"><span>{date}</span><div><strong>{title}</strong><small>{desc}</small></div><b>{value}</b></div></div>)}</>
 }
 
+function BackendStatus({ app, error }: { app: AppModel; error: string }) {
+  const status = app.contract?.status ?? 'draft'
+  const contractId = app.contract?.id ?? 'local draft'
+  const xrplId = app.xrplContract?.id ?? 'not locked'
+
+  return (
+    <div className="backend-status">
+      <div>
+        <span>Backend flow</span>
+        <strong>{status}</strong>
+      </div>
+      <p>BE2 {contractId} · BE1 {xrplId}</p>
+      {error && <em>{error}</em>}
+    </div>
+  )
+}
+
+function BackendInline({ label, error }: { label?: string; error?: string }) {
+  if (!label && !error) {
+    return null
+  }
+
+  return (
+    <div className={error ? 'backend-inline error' : 'backend-inline'}>
+      {label && <span>{label}</span>}
+      {error && <span>{error}</span>}
+    </div>
+  )
+}
+
+function ActionModal({
+  open,
+  title,
+  children,
+  primaryLabel,
+  onPrimary,
+  onClose,
+}: {
+  open: boolean
+  title: string
+  children: React.ReactNode
+  primaryLabel: string
+  onPrimary: () => void
+  onClose: () => void
+}) {
+  if (!open) return null
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={title}>
+      <div className="modal-sheet">
+        <button className="modal-close" onClick={onClose} aria-label="닫기">×</button>
+        <h2>{title}</h2>
+        <div className="modal-body">{children}</div>
+        <button className="modal-primary" onClick={onPrimary}>{primaryLabel}</button>
+      </div>
+    </div>
+  )
+}
+
 function TenantNav({ active, go }: { active: ScreenId; go: (id: ScreenId) => void }) {
   return <nav className="bottom-nav four-tabs">{[['t09', '홈', <HomeIcon />], ['t20', '내역', <HistoryIcon />], ['t13', '보호', <ShieldIcon />], ['t12', '내정보', <UserIcon />]].map(([id, label, icon]) => <button key={id as string} className={active === id ? 'active' : ''} onClick={() => go(id as ScreenId)}>{icon}<span>{label as string}</span></button>)}</nav>
 }
@@ -629,6 +978,21 @@ function krw(value: number) {
 
 function won(value: number) {
   return `${value.toLocaleString('ko-KR')}원`
+}
+
+function shortHash(value: string) {
+  if (value.length <= 12) return value
+  return `${value.slice(0, 6)}…${value.slice(-4)}`
+}
+
+function getReputationStage(score: number) {
+  return reputationStages.find((stage) => score >= stage.min && score <= stage.max) ?? reputationStages[reputationStages.length - 1]
+}
+
+function getNextReputationStage(score: number) {
+  return [...reputationStages]
+    .sort((a, b) => a.min - b.min)
+    .find((stage) => stage.min > score)
 }
 
 function isChromeLessScreen(id: ScreenId) {
